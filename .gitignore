@@ -1,0 +1,32 @@
+# Binaries
+/ai-pr-review
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Planning docs (personal)
+feature.md
+cmd/ai-pr-review/ai-pr-review
