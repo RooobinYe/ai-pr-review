@@ -26,7 +26,11 @@ Thumbs.db
 # Env
 .env
 .env.local
+.ai-pr-review/settings.local.json
 
 # Planning docs (personal)
 feature.md
 cmd/ai-pr-review/ai-pr-review
+
+# Claude Code
+.claude/worktrees/
