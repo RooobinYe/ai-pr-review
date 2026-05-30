@@ -15,7 +15,7 @@ func FormatMarkdown(r *ReviewResult) string {
 
 	// PR header
 	b.WriteString("## PR Information\n\n")
-	b.WriteString(fmt.Sprintf("| Field | Value |\n|-------|-------|\n"))
+	b.WriteString("| Field | Value |\n|-------|-------|\n")
 	b.WriteString(fmt.Sprintf("| **Title** | %s |\n", r.Title))
 	b.WriteString(fmt.Sprintf("| **Author** | @%s |\n", r.Author))
 	b.WriteString(fmt.Sprintf("| **Branch** | `%s` → `%s` |\n", r.HeadBranch, r.BaseBranch))
@@ -60,7 +60,7 @@ func FormatMarkdown(r *ReviewResult) string {
 	if len(r.Risks) == 0 {
 		b.WriteString("No significant risks identified.\n\n")
 	} else {
-		// Summary counts
+		// Summary counts by severity
 		sevCount := make(map[RiskSeverity]int)
 		for _, risk := range r.Risks {
 			sevCount[risk.Severity]++
@@ -74,18 +74,29 @@ func FormatMarkdown(r *ReviewResult) string {
 		}
 		b.WriteString("\n")
 
-		// Individual risks
-		for i, risk := range r.Risks {
-			b.WriteString(fmt.Sprintf("### %d. %s %s\n\n", i+1, severityIcon(risk.Severity), risk.Title))
-			b.WriteString(fmt.Sprintf("- **Severity**: %s\n", risk.Severity.String()))
-			b.WriteString(fmt.Sprintf("- **Category**: %s\n", risk.Category))
-			b.WriteString(fmt.Sprintf("- **Location**: `%s`", risk.File))
-			if risk.Line > 0 {
-				b.WriteString(fmt.Sprintf(":%d", risk.Line))
+		// Split risks by confidence: actionable vs points of interest.
+		actionable := make([]Risk, 0, len(r.Risks))
+		poi := make([]Risk, 0)
+		for _, risk := range r.Risks {
+			if risk.Confidence == ConfidenceLow {
+				poi = append(poi, risk)
+			} else {
+				actionable = append(actionable, risk)
 			}
-			b.WriteString("\n\n")
-			b.WriteString(fmt.Sprintf("**Description**: %s\n\n", risk.Description))
-			b.WriteString(fmt.Sprintf("**Suggestion**: %s\n\n", risk.Suggestion))
+		}
+
+		// Action Required — high/medium confidence risks.
+		if len(actionable) > 0 {
+			b.WriteString("### ⚠️ Action Required\n\n")
+			b.WriteString("*High and medium confidence findings that should be addressed.*\n\n")
+			writeRiskList(&b, actionable)
+		}
+
+		// Points of Interest — low confidence risks.
+		if len(poi) > 0 {
+			b.WriteString("### 💡 Points of Interest\n\n")
+			b.WriteString("*Low confidence findings that may warrant investigation but are not confirmed issues.*\n\n")
+			writeRiskList(&b, poi)
 		}
 	}
 
@@ -114,5 +125,34 @@ func severityIcon(s RiskSeverity) string {
 		return "🟢 low"
 	default:
 		return "ℹ️ info"
+	}
+}
+
+// confidenceIcon returns an icon + label for a confidence level.
+func confidenceIcon(c ConfidenceLevel) string {
+	switch c {
+	case ConfidenceHigh:
+		return "🟢 high"
+	case ConfidenceMedium:
+		return "🟡 medium"
+	default:
+		return "🔴 low"
+	}
+}
+
+// writeRiskList writes a numbered list of risks in markdown format.
+func writeRiskList(b *strings.Builder, risks []Risk) {
+	for i, risk := range risks {
+		b.WriteString(fmt.Sprintf("#### %d. %s %s\n\n", i+1, severityIcon(risk.Severity), risk.Title))
+		b.WriteString(fmt.Sprintf("- **Severity**: %s\n", risk.Severity.String()))
+		b.WriteString(fmt.Sprintf("- **Confidence**: %s\n", confidenceIcon(risk.Confidence)))
+		b.WriteString(fmt.Sprintf("- **Category**: %s\n", risk.Category))
+		b.WriteString(fmt.Sprintf("- **Location**: `%s`", risk.File))
+		if risk.Line > 0 {
+			b.WriteString(fmt.Sprintf(":%d", risk.Line))
+		}
+		b.WriteString("\n\n")
+		b.WriteString(fmt.Sprintf("**Description**: %s\n\n", risk.Description))
+		b.WriteString(fmt.Sprintf("**Suggestion**: %s\n\n", risk.Suggestion))
 	}
 }

@@ -102,15 +102,62 @@ func parseSeverity(str string) RiskSeverity {
 	return RiskSeverityInfo
 }
 
+// ConfidenceLevel rates how confident the reviewer is about a finding.
+type ConfidenceLevel int
+
+const (
+	ConfidenceHigh   ConfidenceLevel = iota
+	ConfidenceMedium
+	ConfidenceLow
+)
+
+var confidenceNames = map[ConfidenceLevel]string{
+	ConfidenceHigh:   "high",
+	ConfidenceMedium: "medium",
+	ConfidenceLow:    "low",
+}
+
+func (c ConfidenceLevel) String() string {
+	if n, ok := confidenceNames[c]; ok {
+		return n
+	}
+	return "low"
+}
+
+func (c ConfidenceLevel) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.String())
+}
+
+func (c *ConfidenceLevel) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	*c = parseConfidence(str)
+	return nil
+}
+
+// parseConfidence converts a string to a ConfidenceLevel.
+func parseConfidence(str string) ConfidenceLevel {
+	lower := strings.ToLower(str)
+	for k, v := range confidenceNames {
+		if v == lower {
+			return k
+		}
+	}
+	return ConfidenceLow
+}
+
 // Risk represents a single risk found during review.
 type Risk struct {
-	File        string       `json:"file"`
-	Line        int          `json:"line"` // 0 means file-level
-	Severity    RiskSeverity `json:"severity"`
-	Category    string       `json:"category"` // security, nil-pointer, error-handling, performance, etc.
-	Title       string       `json:"title"`
-	Description string       `json:"description"`
-	Suggestion  string       `json:"suggestion"`
+	File        string          `json:"file"`
+	Line        int             `json:"line"` // 0 means file-level
+	Severity    RiskSeverity    `json:"severity"`
+	Confidence  ConfidenceLevel `json:"confidence"`
+	Category    string          `json:"category"` // security, nil-pointer, error-handling, performance, etc.
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Suggestion  string          `json:"suggestion"`
 }
 
 // FileSummary summarises the changes in a single file.

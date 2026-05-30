@@ -55,6 +55,7 @@ func TestEngine_Run_Success(t *testing.T) {
       "file": "main.go",
       "line": 4,
       "severity": "low",
+      "confidence": "high",
       "category": "error-handling",
       "title": "Missing error check",
       "description": "fmt.Println error is not checked.",
@@ -220,5 +221,34 @@ func TestTruncate(t *testing.T) {
 	s = truncate("short", 10)
 	if s != "short" {
 		t.Errorf("expected 'short', got %q", s)
+	}
+}
+
+func TestSortRisksBySeverity(t *testing.T) {
+	risks := []Risk{
+		{File: "a.go", Title: "info issue", Severity: RiskSeverityInfo, Confidence: ConfidenceHigh},
+		{File: "b.go", Title: "critical bug", Severity: RiskSeverityCritical, Confidence: ConfidenceHigh},
+		{File: "c.go", Title: "medium issue", Severity: RiskSeverityMedium, Confidence: ConfidenceLow},
+		{File: "d.go", Title: "high issue", Severity: RiskSeverityHigh, Confidence: ConfidenceMedium},
+		{File: "e.go", Title: "critical low conf", Severity: RiskSeverityCritical, Confidence: ConfidenceLow},
+	}
+	sortRisksBySeverity(risks)
+
+	// Should be sorted by severity first, then confidence within same severity.
+	if risks[0].Severity != RiskSeverityCritical || risks[0].Title != "critical bug" {
+		t.Errorf("expected first risk to be 'critical bug' (critical+high), got %q (%s+%s)",
+			risks[0].Title, risks[0].Severity.String(), risks[0].Confidence.String())
+	}
+	if risks[1].Severity != RiskSeverityCritical || risks[1].Title != "critical low conf" {
+		t.Errorf("expected second risk to be 'critical low conf', got %q", risks[1].Title)
+	}
+	if risks[2].Severity != RiskSeverityHigh {
+		t.Errorf("expected third risk to be high, got %s", risks[2].Severity.String())
+	}
+	if risks[3].Severity != RiskSeverityMedium {
+		t.Errorf("expected fourth risk to be medium, got %s", risks[3].Severity.String())
+	}
+	if risks[4].Severity != RiskSeverityInfo {
+		t.Errorf("expected last risk to be info, got %s", risks[4].Severity.String())
 	}
 }
