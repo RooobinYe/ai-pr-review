@@ -10,6 +10,8 @@ import (
 // Fields correspond to JSON keys in .ai-pr-review/settings.json.
 type Settings struct {
 	Model          string   `json:"model,omitempty"`
+	APIKey         string   `json:"apiKey,omitempty"`
+	BaseURL        string   `json:"baseURL,omitempty"`
 	PermissionMode string   `json:"permissionMode,omitempty"`
 	AllowedTools   []string `json:"allowedTools,omitempty"`
 	BlockedTools   []string `json:"blockedTools,omitempty"`
@@ -57,6 +59,12 @@ func merge(dst, src *Settings) {
 	if src.Model != "" {
 		dst.Model = src.Model
 	}
+	if src.APIKey != "" {
+		dst.APIKey = src.APIKey
+	}
+	if src.BaseURL != "" {
+		dst.BaseURL = src.BaseURL
+	}
 	if src.PermissionMode != "" {
 		dst.PermissionMode = src.PermissionMode
 	}
@@ -90,6 +98,12 @@ func WriteProject(s *Settings) error {
 	// Overlay our managed fields.
 	if s.Model != "" {
 		existing["model"] = s.Model
+	}
+	if s.APIKey != "" {
+		existing["apiKey"] = s.APIKey
+	}
+	if s.BaseURL != "" {
+		existing["baseURL"] = s.BaseURL
 	}
 	if s.PermissionMode != "" {
 		existing["permissionMode"] = s.PermissionMode
