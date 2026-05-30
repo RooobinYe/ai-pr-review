@@ -1,5 +1,5 @@
 // Package auth — multi-provider credential storage.
-// Credentials are persisted to ~/.claw-code/credentials.json (mode 0600).
+// Credentials are persisted to ~/.ai-pr-review/credentials.json (mode 0600).
 package auth
 
 import (
@@ -22,13 +22,13 @@ type CredentialStore struct {
 	Providers      map[string]*ProviderCredentials `json:"providers"`
 }
 
-// credentialsFilePath returns the path to ~/.claw-code/credentials.json.
+// credentialsFilePath returns the path to ~/.ai-pr-review/credentials.json.
 func credentialsFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claw-code", "credentials.json"), nil
+	return filepath.Join(home, ".ai-pr-review", "credentials.json"), nil
 }
 
 // LoadCredentialStore reads the credential store from disk.
@@ -115,8 +115,8 @@ func GetActiveProvider() string {
 // Resolution order:
 //  1. ANTHROPIC_API_KEY env var  → provider "anthropic" / method "api_key"
 //  2. OPENAI_API_KEY env var     → provider "openai"    / method "api_key"
-//  3. Active provider in ~/.claw-code/credentials.json
-//  4. Legacy ~/.claw-code/auth.json (Anthropic OAuth from Phase 3 flows)
+//  3. Active provider in ~/.ai-pr-review/credentials.json
+//  4. Legacy ~/.ai-pr-review/auth.json (Anthropic OAuth from Phase 3 flows)
 func ResolveCredentials() (provider, token, method string, err error) {
 	// Env-var overrides take precedence over any stored state.
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
@@ -158,7 +158,7 @@ func ResolveCredentials() (provider, token, method string, err error) {
 		}
 	}
 
-	// Legacy fallback: ~/.claw-code/auth.json written by the original /auth login flow.
+	// Legacy fallback: ~/.ai-pr-review/auth.json written by the original /auth login flow.
 	if activeProv == "anthropic" {
 		td, legErr := LoadTokens()
 		if legErr == nil && !IsExpired(td) {

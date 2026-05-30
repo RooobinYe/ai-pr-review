@@ -10,7 +10,7 @@ import (
 const maxMemoryBytes = 20 * 1024 // 20KB
 
 // LoadMemoryFiles discovers and loads CLAUDE.md files, returning concatenated content.
-// Searches: ~/.claude/CLAUDE.md, <workDir>/CLAUDE.md, <workDir>/.claude/CLAUDE.md
+// Searches: ~/.ai-pr-review/CLAUDE.md, <workDir>/CLAUDE.md, <workDir>/.ai-pr-review/CLAUDE.md
 func LoadMemoryFiles(workDir string) string {
 	homeDir, _ := os.UserHomeDir()
 
@@ -18,9 +18,9 @@ func LoadMemoryFiles(workDir string) string {
 		label string
 		path  string
 	}{
-		{"User global (~/.claude/CLAUDE.md)", filepath.Join(homeDir, ".claude", "CLAUDE.md")},
+		{"User global (~/.ai-pr-review/CLAUDE.md)", filepath.Join(homeDir, ".ai-pr-review", "CLAUDE.md")},
 		{"Project root (CLAUDE.md)", filepath.Join(workDir, "CLAUDE.md")},
-		{"Project config (.claude/CLAUDE.md)", filepath.Join(workDir, ".claude", "CLAUDE.md")},
+		{"Project config (.ai-pr-review/CLAUDE.md)", filepath.Join(workDir, ".ai-pr-review", "CLAUDE.md")},
 	}
 
 	var parts []string
@@ -54,9 +54,9 @@ func LoadMemoryFiles(workDir string) string {
 func MemoryFileMtimes(workDir string) map[string]int64 {
 	homeDir, _ := os.UserHomeDir()
 	paths := []string{
-		filepath.Join(homeDir, ".claude", "CLAUDE.md"),
+		filepath.Join(homeDir, ".ai-pr-review", "CLAUDE.md"),
 		filepath.Join(workDir, "CLAUDE.md"),
-		filepath.Join(workDir, ".claude", "CLAUDE.md"),
+		filepath.Join(workDir, ".ai-pr-review", "CLAUDE.md"),
 	}
 	result := make(map[string]int64)
 	for _, p := range paths {

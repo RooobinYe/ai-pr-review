@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"fmt"
 	"io"
 	"net/http"
@@ -65,7 +65,7 @@ func ExecuteWebFetch(input map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("web_fetch: build request: %w", err)
 	}
-	req.Header.Set("User-Agent", "claw-code/0.1 (text fetcher)")
+	req.Header.Set("User-Agent", "ai-pr-review/0.1 (text fetcher)")
 
 	resp, err := client.Do(req)
 	if err != nil {

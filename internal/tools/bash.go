@@ -2,7 +2,7 @@ package tools
 
 import (
 	"bytes"
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"context"
 	"fmt"
 	"os/exec"

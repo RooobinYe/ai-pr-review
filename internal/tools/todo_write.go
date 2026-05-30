@@ -1,14 +1,14 @@
 package tools
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-const todosPath = ".claude/todos.json"
+const todosPath = ".ai-pr-review/todos.json"
 
 // TodoItem represents a single task in the todo list.
 type TodoItem struct {
@@ -22,7 +22,7 @@ type TodoItem struct {
 func TodoWriteTool() api.Tool {
 	return api.Tool{
 		Name:        "todo_write",
-		Description: "Read or write the task list stored in .claude/todos.json. Use action=read to retrieve todos, action=write to replace the list.",
+		Description: "Read or write the task list stored in .ai-pr-review/todos.json. Use action=read to retrieve todos, action=write to replace the list.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

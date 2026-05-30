@@ -7,7 +7,7 @@ import (
 )
 
 // Settings holds the merged configuration from all settings sources.
-// Fields correspond to JSON keys in .claude/settings.json.
+// Fields correspond to JSON keys in .ai-pr-review/settings.json.
 type Settings struct {
 	Model          string   `json:"model,omitempty"`
 	PermissionMode string   `json:"permissionMode,omitempty"`
@@ -18,9 +18,9 @@ type Settings struct {
 }
 
 // Load returns merged settings from (in order of increasing precedence):
-//  1. ~/.claude/settings.json      (user global)
-//  2. .claude/settings.json        (project)
-//  3. .claude/settings.local.json  (local overrides, typically gitignored)
+//  1. ~/.ai-pr-review/settings.json      (user global)
+//  2. .ai-pr-review/settings.json        (project)
+//  3. .ai-pr-review/settings.local.json  (local overrides, typically gitignored)
 //
 // CLI flag overrides are applied by the caller after Load returns.
 func Load() *Settings {
@@ -30,11 +30,11 @@ func Load() *Settings {
 
 	var sources []string
 	if homeDir != "" {
-		sources = append(sources, filepath.Join(homeDir, ".claude", "settings.json"))
+		sources = append(sources, filepath.Join(homeDir, ".ai-pr-review", "settings.json"))
 	}
 	sources = append(sources,
-		filepath.Join(".claude", "settings.json"),
-		filepath.Join(".claude", "settings.local.json"),
+		filepath.Join(".ai-pr-review", "settings.json"),
+		filepath.Join(".ai-pr-review", "settings.local.json"),
 	)
 
 	for _, path := range sources {
@@ -74,16 +74,16 @@ func merge(dst, src *Settings) {
 	}
 }
 
-// WriteProject writes settings to .claude/settings.json, merging with any
+// WriteProject writes settings to .ai-pr-review/settings.json, merging with any
 // existing content to preserve unmanaged fields (e.g. mcpServers, rules).
 func WriteProject(s *Settings) error {
-	if err := os.MkdirAll(".claude", 0o755); err != nil {
+	if err := os.MkdirAll(".ai-pr-review", 0o755); err != nil {
 		return err
 	}
 
 	// Read existing settings first to preserve unmanaged fields.
 	existing := map[string]any{}
-	if data, err := os.ReadFile(filepath.Join(".claude", "settings.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(".ai-pr-review", "settings.json")); err == nil {
 		_ = json.Unmarshal(data, &existing)
 	}
 
@@ -111,13 +111,13 @@ func WriteProject(s *Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(".claude", "settings.json"), data, 0o644)
+	return os.WriteFile(filepath.Join(".ai-pr-review", "settings.json"), data, 0o644)
 }
 
-// InitProject creates .claude/settings.json with default values.
+// InitProject creates .ai-pr-review/settings.json with default values.
 // Returns os.ErrExist if the file already exists.
 func InitProject(model string) error {
-	path := filepath.Join(".claude", "settings.json")
+	path := filepath.Join(".ai-pr-review", "settings.json")
 	if _, err := os.Stat(path); err == nil {
 		return os.ErrExist
 	}

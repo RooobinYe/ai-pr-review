@@ -7,7 +7,7 @@ package foundry
 import (
 	"fmt"
 
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 )
 
 // Provider implements api.Provider for Azure AI Foundry.

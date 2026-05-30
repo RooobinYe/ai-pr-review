@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -134,7 +134,7 @@ func ddgSearch(query string, numResults int) (string, error) {
 		return "", fmt.Errorf("web_search (ddg): build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "claw-code/0.1 (text search)")
+	req.Header.Set("User-Agent", "ai-pr-review/0.1 (text search)")
 
 	client := &http.Client{Timeout: searchTimeout}
 	resp, err := client.Do(req)

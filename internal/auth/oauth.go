@@ -98,7 +98,7 @@ func StartOAuthFlow() (*TokenData, error) {
 		resultCh <- callbackResult{code: q.Get("code"), state: q.Get("state")}
 		fmt.Fprint(w, `<html><body style="font-family:sans-serif;max-width:480px;margin:4rem auto">
 <h2>Authentication successful!</h2>
-<p>You may close this window and return to claw-code.</p>
+<p>You may close this window and return to ai-pr-review.</p>
 </body></html>`)
 	})
 
@@ -274,7 +274,7 @@ func (s *OAuthSession) Complete() (*TokenData, error) {
 		resultCh <- callbackResult{code: q.Get("code"), state: q.Get("state")}
 		fmt.Fprint(w, `<html><body style="font-family:sans-serif;max-width:480px;margin:4rem auto">
 <h2>Authentication successful!</h2>
-<p>You may close this window and return to claw-code.</p>
+<p>You may close this window and return to ai-pr-review.</p>
 </body></html>`)
 	})
 

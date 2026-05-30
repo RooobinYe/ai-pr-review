@@ -17,13 +17,13 @@ type TokenData struct {
 	Scope        string    `json:"scope,omitempty"`
 }
 
-// authFilePath returns the path to ~/.claw-code/auth.json.
+// authFilePath returns the path to ~/.ai-pr-review/auth.json.
 func authFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claw-code", "auth.json"), nil
+	return filepath.Join(home, ".ai-pr-review", "auth.json"), nil
 }
 
 // LoadTokens reads stored OAuth token data from disk.
@@ -44,7 +44,7 @@ func LoadTokens() (*TokenData, error) {
 	return &td, nil
 }
 
-// SaveTokens writes token data to ~/.claw-code/auth.json (mode 0600).
+// SaveTokens writes token data to ~/.ai-pr-review/auth.json (mode 0600).
 func SaveTokens(td *TokenData) error {
 	path, err := authFilePath()
 	if err != nil {

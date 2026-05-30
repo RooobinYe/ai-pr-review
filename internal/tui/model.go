@@ -1,9 +1,9 @@
 package tui
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/auth"
-	"github.com/yezhenrong/ai-pr-review/internal/config"
-	"github.com/yezhenrong/ai-pr-review/internal/runtime"
+	"ai-pr-review/internal/auth"
+	"ai-pr-review/internal/config"
+	"ai-pr-review/internal/runtime"
 	"context"
 	"fmt"
 	"os"
@@ -572,14 +572,14 @@ func (m Model) handleStatus() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleInit creates .claude/settings.json with defaults.
+// handleInit creates .ai-pr-review/settings.json with defaults.
 func (m Model) handleInit() (tea.Model, tea.Cmd) {
 	err := config.InitProject(m.cfg.Model)
 	switch {
 	case err == nil:
-		m.viewBuf += statusStyle.Render("Created .claude/settings.json with defaults.\n\n")
+		m.viewBuf += statusStyle.Render("Created .ai-pr-review/settings.json with defaults.\n\n")
 	case os.IsExist(err):
-		m.viewBuf += statusStyle.Render(".claude/settings.json already exists — no changes made.\n\n")
+		m.viewBuf += statusStyle.Render(".ai-pr-review/settings.json already exists — no changes made.\n\n")
 	default:
 		m.viewBuf += errorStyle.Render(fmt.Sprintf("init: %v\n\n", err))
 	}
@@ -710,7 +710,7 @@ func (m Model) handleAuthSubcommand(sub string) string {
 		if err := auth.SaveTokens(td); err != nil {
 			return fmt.Sprintf("Login succeeded but could not save token: %v", err)
 		}
-		return "Login successful. Token saved to ~/.claw-code/auth.json"
+		return "Login successful. Token saved to ~/.ai-pr-review/auth.json"
 
 	case "logout":
 		if err := auth.ClearTokens(); err != nil {
@@ -1143,7 +1143,7 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	title := headerStyle.Render("Claw Code v" + appVersion)
+	title := headerStyle.Render("AI PR Review v" + appVersion)
 	tag := modelTagStyle.Render(fmt.Sprintf("  [%s] %s", m.cfg.ProviderName, m.cfg.Model))
 	return title + tag
 }
@@ -1204,7 +1204,7 @@ func (m Model) viewPicker() string {
 
 func (m Model) viewHelp() string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render("Claw Code — Commands"),
+		headerStyle.Render("AI PR Review — Commands"),
 		"",
 		statusStyle.Render("Auth & Provider"),
 		"  "+userLabelStyle.Render("/login")+"                          Multi-provider login flow",
@@ -1215,7 +1215,7 @@ func (m Model) viewHelp() string {
 		"  "+userLabelStyle.Render("/config")+"                         Show all config values",
 		"  "+userLabelStyle.Render("/config")+" <key>                   Show one config value",
 		"  "+userLabelStyle.Render("/config")+" <key> <value>           Set config value (saves to project)",
-		"  "+userLabelStyle.Render("/init")+"                           Create .claude/settings.json",
+		"  "+userLabelStyle.Render("/init")+"                           Create .ai-pr-review/settings.json",
 		"  "+userLabelStyle.Render("/theme")+" dark|light               Switch TUI color theme",
 		"  "+userLabelStyle.Render("/status")+"                         Show model/provider/session info",
 		"  "+userLabelStyle.Render("/cost")+"                           Show token usage this session",

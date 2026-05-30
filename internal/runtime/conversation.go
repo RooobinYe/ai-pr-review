@@ -1,12 +1,12 @@
 package runtime
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
-	clawctx "github.com/yezhenrong/ai-pr-review/internal/context"
-	"github.com/yezhenrong/ai-pr-review/internal/mcp"
-	"github.com/yezhenrong/ai-pr-review/internal/permissions"
-	"github.com/yezhenrong/ai-pr-review/internal/tools"
-	"github.com/yezhenrong/ai-pr-review/internal/usage"
+	"ai-pr-review/internal/api"
+	aprctx "ai-pr-review/internal/context"
+	"ai-pr-review/internal/mcp"
+	"ai-pr-review/internal/permissions"
+	"ai-pr-review/internal/tools"
+	"ai-pr-review/internal/usage"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,7 +26,7 @@ type ConversationLoop struct {
 	Config          *Config
 	MCPRegistry     *mcp.Registry         // MCP server registry (may be nil)
 	Compaction      CompactionState        // Phase 6 token tracking and compaction state
-	CtxAssembler    *clawctx.Assembler    // Phase 12 context assembler (may be nil)
+	CtxAssembler    *aprctx.Assembler    // Phase 12 context assembler (may be nil)
 	Usage           *usage.Tracker        // Phase 13 per-session token usage tracker
 }
 
@@ -51,7 +51,7 @@ func NewConversationLoop(cfg *Config, client api.APIClient) *ConversationLoop {
 		},
 		Permissions:  DefaultPermissions(),
 		Config:       cfg,
-		CtxAssembler: clawctx.NewAssembler(workDir),
+		CtxAssembler: aprctx.NewAssembler(workDir),
 		Usage:        usage.NewTracker(cfg.Model),
 	}
 }

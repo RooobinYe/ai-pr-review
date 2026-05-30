@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"fmt"
 	"os"
 	"path/filepath"

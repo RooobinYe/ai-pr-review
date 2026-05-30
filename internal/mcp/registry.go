@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 )
 
 // serverEntry holds a connected MCP client and its discovered tools.
