@@ -229,3 +229,38 @@ func parseSSEData(data string) (StreamEvent, error) {
 
 	return event, nil
 }
+
+// SendMessage sends a single message and collects the full text response.
+// This is a convenience wrapper around StreamResponse for non-streaming use.
+func (c *Client) SendMessage(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	req := CreateMessageRequest{
+		Model:     c.Model,
+		MaxTokens: 4096,
+		System:    systemPrompt,
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Type: "text", Text: userMessage},
+				},
+			},
+		},
+	}
+
+	ch, err := c.StreamResponse(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("send message: %w", err)
+	}
+
+	var buf bytes.Buffer
+	for event := range ch {
+		if event.Type == EventError {
+			return "", fmt.Errorf("API error: %s", event.ErrorMessage)
+		}
+		if event.Type == EventContentBlockDelta && event.Delta.Type == "text_delta" {
+			buf.WriteString(event.Delta.Text)
+		}
+	}
+
+	return buf.String(), nil
+}

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"ai-pr-review/internal/api"
 	"ai-pr-review/internal/auth"
 	"ai-pr-review/internal/commands"
 	"ai-pr-review/internal/compat"
 	"ai-pr-review/internal/permissions"
+	"ai-pr-review/internal/pr"
+	"ai-pr-review/internal/review"
 	"ai-pr-review/internal/runtime"
 	"ai-pr-review/internal/tui"
 	"context"
@@ -12,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	qtui "ai-pr-review/internal/q/tui"
@@ -37,6 +41,8 @@ func main() {
 	}
 
 	promptFlag := flag.String("prompt", "", "Run a single prompt and exit")
+	prFlag := flag.String("pr", "", "GitHub PR URL to review (e.g. https://github.com/owner/repo/pull/123)")
+	formatFlag := flag.String("format", "", "Output format: markdown or json (requires --pr)")
 	modelFlag := flag.String("model", "", "Override the model to use")
 	replFlag := flag.Bool("repl", false, "Run in interactive REPL mode (default when no --prompt)")
 	sessionFlag := flag.String("session", "", "Session ID to load")
@@ -53,7 +59,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  resume-session <file> [commands...]     Replay a saved session file\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nPR Review:\n")
+		fmt.Fprintf(os.Stderr, "  ai-pr-review --pr https://github.com/owner/repo/pull/123\n")
+		fmt.Fprintf(os.Stderr, "  ai-pr-review --pr https://github.com/owner/repo/pull/123 --format markdown\n")
+		fmt.Fprintf(os.Stderr, "  ai-pr-review --pr https://github.com/owner/repo/pull/123 使用中文回答\n")
 		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
+		fmt.Fprintf(os.Stderr, "  GITHUB_TOKEN             GitHub personal access token (recommended for --pr)\n")
 		fmt.Fprintf(os.Stderr, "  ANTHROPIC_API_KEY        Anthropic API key (takes precedence over stored credentials)\n")
 		fmt.Fprintf(os.Stderr, "  OPENAI_API_KEY           OpenAI API key (takes precedence over stored credentials)\n")
 		fmt.Fprintf(os.Stderr, "  ANTHROPIC_MODEL          Model to use (default: %s)\n", runtime.DefaultModel)
@@ -64,6 +75,86 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Extra args after flags become natural-language instructions for the review.
+	extraArgs := strings.Join(flag.Args(), " ")
+
+	// prInitialPrompt carries the PR analysis prompt into the TUI when --pr is
+	// used without --format.
+	var prInitialPrompt string
+
+	// If --pr is specified, validate the URL, fetch PR data, and print summary.
+	var prInfo *pr.PRInfo
+	if *prFlag != "" {
+		info, err := pr.ParsePRURL(*prFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid PR URL %q: %v\n", *prFlag, err)
+			fmt.Fprintln(os.Stderr, "Expected format: https://github.com/owner/repo/pull/number")
+			os.Exit(1)
+		}
+		prInfo = info
+
+		token := os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "Warning: GITHUB_TOKEN environment variable is not set.")
+			fmt.Fprintln(os.Stderr, "         Public repos will work with strict rate limiting (60 req/hour).")
+			fmt.Fprintln(os.Stderr, "         For private repos or higher limits, set: export GITHUB_TOKEN=<your-github-token>")
+		}
+
+		fmt.Printf("PR Review: %s/%s #%d\n", prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
+		fmt.Println()
+
+		client := pr.NewGitHubClient(token)
+		ctx := context.Background()
+
+		fmt.Println("Fetching PR details...")
+		prData, fetchErr := client.FetchPR(ctx, prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
+		if fetchErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to fetch PR data: %v\n", fetchErr)
+			os.Exit(1)
+		}
+
+		// Print PR summary.
+		fmt.Printf("  Title:   %s\n", prData.Details.Title)
+		fmt.Printf("  Author:  %s\n", prData.Details.Author)
+		fmt.Printf("  State:   %s\n", prData.Details.State)
+		fmt.Printf("  Branch:  %s ← %s\n", prData.Details.BaseBranch, prData.Details.HeadBranch)
+		fmt.Printf("  Commits: %s (base) ↔ %s (head)\n", shortSHA(prData.Details.BaseSHA), shortSHA(prData.Details.HeadSHA))
+		fmt.Printf("  URL:     %s\n", prData.Details.URL)
+
+		if prData.Details.Description != "" {
+			fmt.Println()
+			fmt.Println("  Description:")
+			for _, line := range wrapLines(prData.Details.Description, 80) {
+				fmt.Printf("    %s\n", line)
+			}
+		}
+
+		fmt.Println()
+		fmt.Printf("Changed files (%d):\n", len(prData.Files))
+		totalAdds, totalDels := 0, 0
+		for _, f := range prData.Files {
+			tag := statusTag(f.Status)
+			fmt.Printf("  %s %s  +%d -%d", tag, f.Filename, f.Additions, f.Deletions)
+			if f.PreviousFilename != "" {
+				fmt.Printf("  (renamed from %s)", f.PreviousFilename)
+			}
+			fmt.Println()
+			totalAdds += f.Additions
+			totalDels += f.Deletions
+		}
+		fmt.Printf("  %d files, +%d -%d\n", len(prData.Files), totalAdds, totalDels)
+
+		// --format: run review pipeline and exit immediately.
+		if *formatFlag != "" {
+			runReviewPipeline(prData, *formatFlag, *modelFlag, extraArgs)
+			return
+		}
+
+		// No --format: build the initial PR analysis prompt for the TUI.
+		prInitialPrompt = buildPRPrompt(prData, extraArgs)
+		// Fall through to the TUI path below.
+	}
 
 	cfg := runtime.LoadConfig()
 
@@ -167,11 +258,215 @@ func main() {
 	}
 
 	// Interactive TUI mode.
-	runTUI(cfg, loop)
+	runTUI(cfg, loop, prInitialPrompt)
+}
+
+// buildPRPrompt constructs the initial analysis prompt for --pr TUI mode.
+// extraArgs contains optional user instructions appended after the PR context
+// (e.g. "使用中文回答", "focus on security issues").
+func buildPRPrompt(data *pr.PRData, extraArgs string) string {
+	diffs, err := pr.ParsePRData(data)
+	if err != nil {
+		// Fallback: simple prompt without parsed diffs.
+		return fmt.Sprintf(
+			`Please review this GitHub pull request:
+
+Title: %s
+Author: %s
+Branch: %s → %s
+Files changed: %d
+
+Provide a thorough code review covering:
+1. Summary of what this PR changes
+2. Potential risks (security, nil pointers, error handling, performance, concurrency)
+3. Specific, actionable suggestions for improvement
+
+Focus on the most important issues first.`,
+			data.Details.Title,
+			data.Details.Author,
+			data.Details.HeadBranch,
+			data.Details.BaseBranch,
+			len(data.Files),
+		)
+	}
+
+	catCounts := make(map[review.FileCategory]int)
+	for _, df := range diffs {
+		catCounts[review.ClassifyFile(df.Filename)]++
+	}
+
+	var b strings.Builder
+	b.WriteString("Please review this GitHub pull request:\n\n")
+	b.WriteString(fmt.Sprintf("**Title:** %s\n", data.Details.Title))
+	b.WriteString(fmt.Sprintf("**Author:** %s\n", data.Details.Author))
+	b.WriteString(fmt.Sprintf("**Branch:** `%s` → `%s`\n", data.Details.HeadBranch, data.Details.BaseBranch))
+	if data.Details.Description != "" {
+		b.WriteString(fmt.Sprintf("**Description:** %s\n", data.Details.Description))
+	}
+	b.WriteString(fmt.Sprintf("\n**Files changed:** %d (+%d/-%d)\n\n", len(data.Files),
+		sumAdditions(data.Files), sumDeletions(data.Files)))
+
+	b.WriteString("### File Overview\n\n")
+	for _, f := range data.Files {
+		cat := review.ClassifyFile(f.Filename)
+		tag := ""
+		switch f.Status {
+		case "added":
+			tag = "[new]"
+		case "modified":
+			tag = "[mod]"
+		case "removed":
+			tag = "[del]"
+		case "renamed":
+			tag = "[ren]"
+		}
+		b.WriteString(fmt.Sprintf("- %s `%s` [%s] +%d/-%d\n", tag, f.Filename, cat.String(), f.Additions, f.Deletions))
+	}
+	b.WriteString(fmt.Sprintf("\nCategories: %s\n", formatCatCounts(catCounts)))
+
+	// Include the actual diffs.
+	diffText := buildDiffText(diffs)
+	if len(diffText) > 40000 {
+		diffText = diffText[:40000] + "\n... (truncated for length)"
+	}
+	b.WriteString("\n### Diffs\n\n")
+	b.WriteString(diffText)
+	b.WriteString("\n\n---\n\n")
+	b.WriteString("Provide a thorough code review covering:\n")
+	b.WriteString("1. Summary of what this PR changes\n")
+	b.WriteString("2. Potential risks (security, nil pointers, error handling, performance, concurrency)\n")
+	b.WriteString("3. Specific, actionable suggestions for improvement\n")
+	b.WriteString("\nFocus on the most important issues first.\n")
+
+	if extraArgs != "" {
+		b.WriteString(fmt.Sprintf("\nAdditional instructions: %s\n", extraArgs))
+	}
+
+	return b.String()
+}
+
+// buildDiffText renders parsed diffs into a compact text format.
+func buildDiffText(diffs []pr.DiffFile) string {
+	var b strings.Builder
+	for _, df := range diffs {
+		b.WriteString(fmt.Sprintf("#### %s", df.Filename))
+		if df.PreviousFilename != "" {
+			b.WriteString(fmt.Sprintf(" (renamed from %s)", df.PreviousFilename))
+		}
+		b.WriteString(fmt.Sprintf(" [%s]\n", df.Status))
+		b.WriteString("```diff\n")
+		for _, h := range df.Hunks {
+			b.WriteString(h.Header + "\n")
+			for _, l := range h.Lines {
+				switch l.Type {
+				case pr.DiffLineAdded:
+					b.WriteString("+" + l.Content + "\n")
+				case pr.DiffLineRemoved:
+					b.WriteString("-" + l.Content + "\n")
+				case pr.DiffLineContext:
+					b.WriteString(" " + l.Content + "\n")
+				}
+			}
+		}
+		b.WriteString("```\n")
+		if b.Len() > 40000 {
+			b.WriteString("\n... (remaining diffs truncated)\n")
+			break
+		}
+	}
+	return b.String()
+}
+
+func sumAdditions(files []pr.ChangedFile) int {
+	total := 0
+	for _, f := range files {
+		total += f.Additions
+	}
+	return total
+}
+
+func sumDeletions(files []pr.ChangedFile) int {
+	total := 0
+	for _, f := range files {
+		total += f.Deletions
+	}
+	return total
+}
+
+func formatCatCounts(counts map[review.FileCategory]int) string {
+	order := []review.FileCategory{
+		review.FileCategoryCode,
+		review.FileCategoryTest,
+		review.FileCategoryConfig,
+		review.FileCategoryDoc,
+		review.FileCategoryOther,
+	}
+	var parts []string
+	for _, cat := range order {
+		if n := counts[cat]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, cat.String()))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// runReviewPipeline runs the full AI review and outputs formatted results.
+func runReviewPipeline(prData *pr.PRData, format, modelFlag, extraArgs string) {
+	_ = extraArgs // extra instructions are for TUI mode only
+	format = strings.ToLower(format)
+	if format != "markdown" && format != "json" {
+		fmt.Fprintf(os.Stderr, "Error: unsupported format %q. Use \"markdown\" or \"json\".\n", format)
+		os.Exit(1)
+	}
+
+	// Resolve model and API key for the review.
+	model := modelFlag
+	if model == "" {
+		model = os.Getenv("ANTHROPIC_MODEL")
+		if model == "" {
+			model = runtime.DefaultModel
+		}
+	}
+
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		// Try loading from auth store.
+		_, token, _, err := auth.ResolveCredentials()
+		if err == nil {
+			apiKey = token
+		}
+	}
+
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "Error: ANTHROPIC_API_KEY is not set.")
+		fmt.Fprintln(os.Stderr, "       Set it via environment variable or use /login in the TUI first.")
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(os.Stderr, "Running AI review...")
+
+	apiClient := api.NewClient(apiKey, model)
+	engine := review.NewEngine(apiClient, model)
+
+	ctx := context.Background()
+	result, err := engine.Run(ctx, prData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: review failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	var output string
+	switch format {
+	case "markdown":
+		output = review.FormatMarkdown(result)
+	case "json":
+		output = review.FormatJSON(result)
+	}
+	fmt.Println(output)
 }
 
 // runTUI starts the Bubble Tea TUI for interactive use.
-func runTUI(cfg *runtime.Config, loop *runtime.ConversationLoop) {
+func runTUI(cfg *runtime.Config, loop *runtime.ConversationLoop, initialPrompt string) {
 	// Register slash commands (available for future non-TUI REPL mode).
 	registry := commands.NewRegistry()
 	commands.RegisterAuthCommands(registry)
@@ -187,7 +482,7 @@ func runTUI(cfg *runtime.Config, loop *runtime.ConversationLoop) {
 		os.Exit(0)
 	}()
 
-	model := tui.NewModel(cfg, loop)
+	model := tui.NewModel(cfg, loop, initialPrompt)
 	if err := qtui.RunTUI(model, qtui.Options{
 		Framerate:   60,
 		EnableMouse: true,
@@ -205,4 +500,76 @@ func saveSessionSilent(dir string, loop *runtime.ConversationLoop) {
 	if err := runtime.SaveSession(dir, loop.Session); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not save session: %v\n", err)
 	}
+}
+
+// shortSHA returns the first 7 characters of a commit SHA.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// statusTag returns a colored tag for a file change status.
+func statusTag(status string) string {
+	switch status {
+	case "added":
+		return "[+]"
+	case "removed":
+		return "[-]"
+	case "renamed":
+		return "[→]"
+	case "modified":
+		return "[~]"
+	default:
+		return "[ ]"
+	}
+}
+
+// wrapLines wraps text to a maximum width, preserving existing newlines.
+func wrapLines(text string, width int) []string {
+	if text == "" {
+		return nil
+	}
+	var lines []string
+	for _, paragraph := range splitLines(text) {
+		if paragraph == "" {
+			lines = append(lines, "")
+			continue
+		}
+		runes := []rune(paragraph)
+		for len(runes) > width {
+			// Find a good break point.
+			br := width
+			for br > 0 && runes[br] != ' ' {
+				br--
+			}
+			if br == 0 {
+				br = width // force break
+			}
+			lines = append(lines, string(runes[:br]))
+			if runes[br] == ' ' {
+				br++
+			}
+			runes = runes[br:]
+		}
+		if len(runes) > 0 {
+			lines = append(lines, string(runes))
+		}
+	}
+	return lines
+}
+
+// splitLines splits text by newlines, like strings.Split but without the allocation pattern.
+func splitLines(text string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			lines = append(lines, text[start:i])
+			start = i + 1
+		}
+	}
+	lines = append(lines, text[start:])
+	return lines
 }
