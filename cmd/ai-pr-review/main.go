@@ -121,30 +121,6 @@ func main() {
 		fmt.Printf("  Branch:  %s ← %s\n", prData.Details.BaseBranch, prData.Details.HeadBranch)
 		fmt.Printf("  Commits: %s (base) ↔ %s (head)\n", shortSHA(prData.Details.BaseSHA), shortSHA(prData.Details.HeadSHA))
 		fmt.Printf("  URL:     %s\n", prData.Details.URL)
-
-		if prData.Details.Description != "" {
-			fmt.Println()
-			fmt.Println("  Description:")
-			for _, line := range wrapLines(prData.Details.Description, 80) {
-				fmt.Printf("    %s\n", line)
-			}
-		}
-
-		fmt.Println()
-		fmt.Printf("Changed files (%d):\n", len(prData.Files))
-		totalAdds, totalDels := 0, 0
-		for _, f := range prData.Files {
-			tag := statusTag(f.Status)
-			fmt.Printf("  %s %s  +%d -%d", tag, f.Filename, f.Additions, f.Deletions)
-			if f.PreviousFilename != "" {
-				fmt.Printf("  (renamed from %s)", f.PreviousFilename)
-			}
-			fmt.Println()
-			totalAdds += f.Additions
-			totalDels += f.Deletions
-		}
-		fmt.Printf("  %d files, +%d -%d\n", len(prData.Files), totalAdds, totalDels)
-
 		// --format: run review pipeline and exit immediately.
 		if *formatFlag != "" {
 			runReviewPipeline(prData, *formatFlag, *modelFlag, extraArgs)
@@ -419,34 +395,54 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, extraArgs string) {
 		os.Exit(1)
 	}
 
-	// Resolve model and API key for the review.
-	model := modelFlag
-	if model == "" {
-		model = os.Getenv("ANTHROPIC_MODEL")
-		if model == "" {
-			model = runtime.DefaultModel
-		}
+	// Use the exact same config + credential resolution as the TUI path so that
+	// BaseURL, provider selection, and all credential sources are consistent.
+	cfg := runtime.LoadConfig()
+
+	if modelFlag != "" {
+		cfg.Model = modelFlag
 	}
 
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		// Try loading from auth store.
-		_, token, _, err := auth.ResolveCredentials()
-		if err == nil {
-			apiKey = token
+	providerName, token, authMethod, credErr := auth.ResolveCredentials()
+	if credErr == nil {
+		cfg.ProviderName = providerName
+		cfg.AuthMethod = authMethod
+		if authMethod == "oauth" {
+			cfg.OAuthToken = token
+		} else {
+			cfg.APIKey = token
 		}
 	}
+	// If ResolveCredentials failed, cfg.APIKey still holds the value from
+	// LoadConfig (settings.json / ANTHROPIC_API_KEY env var).
 
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "Error: ANTHROPIC_API_KEY is not set.")
-		fmt.Fprintln(os.Stderr, "       Set it via environment variable or use /login in the TUI first.")
+	if cfg.APIKey == "" && cfg.OAuthToken == "" {
+		fmt.Fprintln(os.Stderr, "Error: no credentials found.")
+		fmt.Fprintln(os.Stderr, "       Set ANTHROPIC_API_KEY or OPENAI_API_KEY,")
+		fmt.Fprintln(os.Stderr, "       add \"apiKey\" to .ai-pr-review/settings.json,")
+		fmt.Fprintln(os.Stderr, "       or run the TUI first and use /login to authenticate.")
+		os.Exit(1)
+	}
+
+	// Create the provider client through the same factory used by the TUI.
+	// This ensures BaseURL from settings / ANTHROPIC_BASE_URL is respected.
+	providerClient, clientErr := runtime.NewProviderClient(cfg)
+	if clientErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not create %s client: %v\n", cfg.ProviderName, clientErr)
+		os.Exit(1)
+	}
+
+	// The review engine needs a concrete *api.Client for SendMessage.
+	apiClient, ok := providerClient.(*api.Client)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: unsupported provider %q for review pipeline.\n", cfg.ProviderName)
+		fmt.Fprintln(os.Stderr, "       Direct review currently requires the Anthropic API.")
 		os.Exit(1)
 	}
 
 	fmt.Fprintln(os.Stderr, "Running AI review...")
 
-	apiClient := api.NewClient(apiKey, model)
-	engine := review.NewEngine(apiClient, model)
+	engine := review.NewEngine(apiClient, cfg.Model)
 
 	ctx := context.Background()
 	result, err := engine.Run(ctx, prData)

@@ -130,3 +130,29 @@ func TestParseSeverity(t *testing.T) {
 		}
 	}
 }
+
+func TestConfidenceString(t *testing.T) {
+	if ConfidenceHigh.String() != "high" {
+		t.Errorf("unexpected: %s", ConfidenceHigh.String())
+	}
+	if ConfidenceLow.String() != "low" {
+		t.Errorf("unexpected: %s", ConfidenceLow.String())
+	}
+}
+
+func TestParseConfidence(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected ConfidenceLevel
+	}{
+		{"high", ConfidenceHigh},
+		{"medium", ConfidenceMedium},
+		{"low", ConfidenceLow},
+		{"unknown", ConfidenceLow},
+	}
+	for _, tt := range tests {
+		if got := parseConfidence(tt.input); got != tt.expected {
+			t.Errorf("parseConfidence(%q) = %s, want %s", tt.input, got.String(), tt.expected.String())
+		}
+	}
+}

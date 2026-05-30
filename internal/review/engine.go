@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"ai-pr-review/internal/pr"
@@ -31,6 +32,7 @@ type llmRisk struct {
 	File        string `json:"file"`
 	Line        int    `json:"line"`
 	Severity    string `json:"severity"`
+	Confidence  string `json:"confidence"`
 	Category    string `json:"category"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -76,7 +78,9 @@ func (e *Engine) Run(ctx context.Context, data *pr.PRData) (*ReviewResult, error
 
 	response, err := e.client.SendMessage(ctx, systemPrompt, prompt)
 	if err != nil {
-		// If LLM call fails, return a result with classifier-only data.
+		// If LLM call fails, return a result with classifier-only data but warn the user.
+		fmt.Fprintf(os.Stderr, "Warning: AI analysis unavailable (%v).\n", err)
+		fmt.Fprintln(os.Stderr, "         Showing classifier-only summary without risk analysis.")
 		return &ReviewResult{
 			PRInfo:      data.Info,
 			Title:       data.Details.Title,
@@ -91,6 +95,8 @@ func (e *Engine) Run(ctx context.Context, data *pr.PRData) (*ReviewResult, error
 	// Parse LLM response.
 	llmResult, err := parseLLMResponse(response)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to parse AI response (%v).\n", err)
+		fmt.Fprintln(os.Stderr, "         Showing classifier-only summary without risk analysis.")
 		return &ReviewResult{
 			PRInfo:      data.Info,
 			Title:       data.Details.Title,
@@ -105,8 +111,9 @@ func (e *Engine) Run(ctx context.Context, data *pr.PRData) (*ReviewResult, error
 	// Merge LLM file summaries with classifier data.
 	mergedFiles := mergeFileSummaries(fileSummaries, llmResult.FileChanges)
 
-	// Convert risks.
+	// Convert risks and sort by severity (most critical first).
 	risks := convertRisks(llmResult.Risks)
+	sortRisksBySeverity(risks)
 
 	return &ReviewResult{
 		PRInfo:      data.Info,
@@ -134,6 +141,7 @@ func reviewSystemPrompt() string {
       "file": "path/to/file.go",
       "line": 0,
       "severity": "critical|high|medium|low|info",
+      "confidence": "high|medium|low",
       "category": "security|nil-pointer|error-handling|performance|logic|concurrency|style|other",
       "title": "short risk title",
       "description": "detailed explanation of the risk",
@@ -147,6 +155,7 @@ Guidelines:
 - Focus on: security vulnerabilities, nil pointer dereferences, missing error handling, race conditions, performance regressions, and logical errors.
 - For each risk, provide a specific, actionable suggestion.
 - Set line to the new file line number when possible (from the + lines in the diff), or 0 for file-level issues.
+- Set confidence based on how certain you are: "high" for clear-cut issues (e.g., obvious nil dereference), "medium" for likely issues (e.g., probable race condition), "low" for speculative findings (e.g., potential edge case that may not occur in practice).
 - If there are no significant risks, return an empty risks array.
 - Return ONLY valid JSON, no markdown fences or commentary.`
 }
@@ -260,6 +269,7 @@ func convertRisks(llmRisks []llmRisk) []Risk {
 			File:        r.File,
 			Line:        r.Line,
 			Severity:    parseSeverity(r.Severity),
+			Confidence:  parseConfidence(r.Confidence),
 			Category:    r.Category,
 			Title:       r.Title,
 			Description: r.Description,
@@ -267,6 +277,19 @@ func convertRisks(llmRisks []llmRisk) []Risk {
 		})
 	}
 	return risks
+}
+
+// sortRisksBySeverity sorts risks in-place from most to least severe.
+// Within the same severity, higher confidence items come first.
+func sortRisksBySeverity(risks []Risk) {
+	for i := 0; i < len(risks); i++ {
+		for j := i + 1; j < len(risks); j++ {
+			if risks[j].Severity < risks[i].Severity ||
+				(risks[j].Severity == risks[i].Severity && risks[j].Confidence < risks[i].Confidence) {
+				risks[i], risks[j] = risks[j], risks[i]
+			}
+		}
+	}
 }
 
 // countChanges counts added and removed lines in a parsed DiffFile.
