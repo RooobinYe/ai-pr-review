@@ -5,7 +5,7 @@ package openai
 import (
 	"bufio"
 	"bytes"
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"context"
 	"encoding/json"
 	"fmt"

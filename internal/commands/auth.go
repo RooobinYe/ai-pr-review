@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/auth"
+	"ai-pr-review/internal/auth"
 	"fmt"
 	"strings"
 )
@@ -44,7 +44,7 @@ func cmdAuthLogin() error {
 	if err := auth.SaveTokens(td); err != nil {
 		return fmt.Errorf("save tokens: %w", err)
 	}
-	fmt.Println("Login successful. Token saved to ~/.claw-code/auth.json")
+	fmt.Println("Login successful. Token saved to ~/.ai-pr-review/auth.json")
 	return nil
 }
 

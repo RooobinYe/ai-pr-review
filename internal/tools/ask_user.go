@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 )
 
 // AskUserQuestionTool returns the tool definition for asking the user a question.

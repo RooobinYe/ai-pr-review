@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 	"encoding/json"
 	"fmt"
 	"os"

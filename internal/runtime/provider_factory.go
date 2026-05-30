@@ -1,12 +1,12 @@
 package runtime
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/api"
-	anthropicprovider "github.com/yezhenrong/ai-pr-review/internal/api/providers/anthropic"
-	bedrockprovider "github.com/yezhenrong/ai-pr-review/internal/api/providers/bedrock"
-	foundryprovider "github.com/yezhenrong/ai-pr-review/internal/api/providers/foundry"
-	openaiprovider "github.com/yezhenrong/ai-pr-review/internal/api/providers/openai"
-	vertexprovider "github.com/yezhenrong/ai-pr-review/internal/api/providers/vertex"
+	"ai-pr-review/internal/api"
+	anthropicprovider "ai-pr-review/internal/api/providers/anthropic"
+	bedrockprovider "ai-pr-review/internal/api/providers/bedrock"
+	foundryprovider "ai-pr-review/internal/api/providers/foundry"
+	openaiprovider "ai-pr-review/internal/api/providers/openai"
+	vertexprovider "ai-pr-review/internal/api/providers/vertex"
 	"context"
 	"fmt"
 )

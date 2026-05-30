@@ -1,12 +1,12 @@
 package main
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/auth"
-	"github.com/yezhenrong/ai-pr-review/internal/commands"
-	"github.com/yezhenrong/ai-pr-review/internal/compat"
-	"github.com/yezhenrong/ai-pr-review/internal/permissions"
-	"github.com/yezhenrong/ai-pr-review/internal/runtime"
-	"github.com/yezhenrong/ai-pr-review/internal/tui"
+	"ai-pr-review/internal/auth"
+	"ai-pr-review/internal/commands"
+	"ai-pr-review/internal/compat"
+	"ai-pr-review/internal/permissions"
+	"ai-pr-review/internal/runtime"
+	"ai-pr-review/internal/tui"
 	"context"
 	"flag"
 	"fmt"
@@ -117,7 +117,7 @@ func main() {
 	}
 	cfg.PermissionMode = permMode.String() // normalise back into Config
 
-	ruleset, rErr := permissions.LoadRuleset(".claude/settings.json")
+	ruleset, rErr := permissions.LoadRuleset(".ai-pr-review/settings.json")
 	if rErr != nil {
 		ruleset = &permissions.Ruleset{}
 	}

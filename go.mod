@@ -1,4 +1,4 @@
-module github.com/yezhenrong/ai-pr-review
+module ai-pr-review
 
 go 1.24.2
 

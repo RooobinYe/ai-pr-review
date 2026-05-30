@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yezhenrong/ai-pr-review/internal/api"
+	"ai-pr-review/internal/api"
 )
 
 const (

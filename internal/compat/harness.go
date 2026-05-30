@@ -1,9 +1,9 @@
 package compat
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/commands"
-	"github.com/yezhenrong/ai-pr-review/internal/runtime"
-	"github.com/yezhenrong/ai-pr-review/internal/tools"
+	"ai-pr-review/internal/commands"
+	"ai-pr-review/internal/runtime"
+	"ai-pr-review/internal/tools"
 	"context"
 	"encoding/json"
 	"flag"
@@ -125,7 +125,7 @@ func RunBootstrapPlan(args []string) {
 		{2, "Credentials", "Resolve provider credentials (API key or OAuth token) via multi-provider auth store; fall back gracefully if none found"},
 		{3, "Provider Client", "Create the appropriate provider API client (Anthropic, OpenAI, Bedrock, Vertex, Foundry) or a no-auth placeholder"},
 		{4, "Conversation Loop", "Initialize ConversationLoop with built-in tools: bash, read_file, write_file, glob, grep"},
-		{5, "Permission Manager", "Set up permission manager with configured mode (default, accept-edits, bypass, plan) and ruleset from .claude/settings.json"},
+		{5, "Permission Manager", "Set up permission manager with configured mode (default, accept-edits, bypass, plan) and ruleset from .ai-pr-review/settings.json"},
 		{6, "MCP Servers", "Connect to Model Context Protocol servers defined in config (stdio and SSE transports)"},
 		{7, "Session", "Load existing session from disk if --session flag provided; merge into conversation loop"},
 		{8, "UI Launch", "Start Bubble Tea TUI (interactive mode) or execute single --prompt (non-interactive streaming mode)"},

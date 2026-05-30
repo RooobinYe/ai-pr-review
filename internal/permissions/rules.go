@@ -54,7 +54,7 @@ func (rs *Ruleset) Match(tool, input string) (Decision, bool) {
 	return DecisionAsk, false
 }
 
-// settingsFile is the on-disk format for .claude/settings.json.
+// settingsFile is the on-disk format for .ai-pr-review/settings.json.
 // It supports both a structured "rules" array and the simpler
 // "allowedTools" / "blockedTools" lists.
 type settingsFile struct {
@@ -69,7 +69,7 @@ type settingsFile struct {
 	BlockedTools []string `json:"blockedTools"`
 }
 
-// LoadRuleset reads .claude/settings.json relative to the current directory.
+// LoadRuleset reads .ai-pr-review/settings.json relative to the current directory.
 // If the file does not exist an empty (no-op) ruleset is returned without error.
 //
 // Precedence within the file: explicit "rules" entries are matched first, then

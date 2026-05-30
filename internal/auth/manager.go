@@ -18,7 +18,7 @@ type Status struct {
 //
 // Resolution order:
 //  1. ANTHROPIC_API_KEY env var (returned directly as the key value)
-//  2. OAuth tokens from ~/.claw-code/auth.json (auto-refreshed if expired)
+//  2. OAuth tokens from ~/.ai-pr-review/auth.json (auto-refreshed if expired)
 //
 // Returns an error if no credentials are available.
 func GetAccessToken() (string, error) {

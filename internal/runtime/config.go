@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"github.com/yezhenrong/ai-pr-review/internal/config"
+	"ai-pr-review/internal/config"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -112,12 +112,12 @@ func LoadConfig() *Config {
 		cfg.BaseURL = baseURL
 	}
 
-	// Default session dir: ~/.claw-code/sessions
+	// Default session dir: ~/.ai-pr-review/sessions
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
-		cfg.SessionDir = filepath.Join(homeDir, ".claw-code", "sessions")
+		cfg.SessionDir = filepath.Join(homeDir, ".ai-pr-review", "sessions")
 	} else {
-		cfg.SessionDir = ".claw-code-sessions"
+		cfg.SessionDir = ".ai-pr-review-sessions"
 	}
 
 	// Detect the active provider from environment variables.
@@ -140,11 +140,11 @@ func loadMCPServers(homeDir string) []MCPServerConfig {
 		}
 	}
 
-	// Otherwise read from ~/.claude/settings.json.
+	// Otherwise read from ~/.ai-pr-review/settings.json.
 	if homeDir == "" {
 		return nil
 	}
-	settingsPath := filepath.Join(homeDir, ".claude", "settings.json")
+	settingsPath := filepath.Join(homeDir, ".ai-pr-review", "settings.json")
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
 		return nil
