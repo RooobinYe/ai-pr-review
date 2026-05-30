@@ -28,7 +28,7 @@ export ANTHROPIC_MODEL=$(jq -r '.model' .ai-pr-review/settings.local.json)
 
 ### 1. 创建分支
 
-分支名采用约定式提交格式（小写，英文，连字符分隔）
+分支名采用约定式提交格式（小写，英文，连字符分隔），worktree 名也遵循同样规范
 
 ### 2. 提交代码
 
