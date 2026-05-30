@@ -1,66 +1,65 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "ai-pr-review/internal/q/termformat"
 
 // Theme defines the named color tokens used throughout the TUI.
-// All lipgloss styles are derived from the active theme.
+// All termformat styles are derived from the active theme.
 type Theme struct {
-	Primary        lipgloss.Color // app accent (header, spinner)
-	Secondary      lipgloss.Color // secondary accent (overlay borders)
-	Success        lipgloss.Color // positive outcomes
-	Warning        lipgloss.Color // advisory messages
-	Error          lipgloss.Color // error messages
-	Muted          lipgloss.Color // de-emphasized text (status bar)
-	Subtle         lipgloss.Color // very subtle (dividers)
-	UserLabel      lipgloss.Color // "You:" label
-	AssistantLabel lipgloss.Color // "Claude:" label
-	ToolRunning    lipgloss.Color // in-progress tool indicator
-	ToolDone       lipgloss.Color // completed tool indicator
-	ToolFailed     lipgloss.Color // failed tool indicator
-	InputPrompt    lipgloss.Color // ">" prompt glyph
-	SelectedItem   lipgloss.Color // highlighted item in pickers
-	UnselectedItem lipgloss.Color // unselected item in pickers
+	Primary        termformat.Color
+	Secondary      termformat.Color
+	Success        termformat.Color
+	Warning        termformat.Color
+	Error          termformat.Color
+	Muted          termformat.Color
+	Subtle         termformat.Color
+	UserLabel      termformat.Color
+	AssistantLabel termformat.Color
+	ToolRunning    termformat.Color
+	ToolDone       termformat.Color
+	ToolFailed     termformat.Color
+	InputPrompt    termformat.Color
+	SelectedItem   termformat.Color
+	UnselectedItem termformat.Color
 }
 
 // DarkTheme is the default color scheme for dark-background terminals.
 var DarkTheme = Theme{
-	Primary:        "205",
-	Secondary:      "62",
-	Success:        "82",
-	Warning:        "214",
-	Error:          "196",
-	Muted:          "240",
-	Subtle:         "238",
-	UserLabel:      "33",
-	AssistantLabel: "82",
-	ToolRunning:    "214",
-	ToolDone:       "240",
-	ToolFailed:     "196",
-	InputPrompt:    "33",
-	SelectedItem:   "170",
-	UnselectedItem: "252",
+	Primary:        termformat.ANSI256Color(205),
+	Secondary:      termformat.ANSI256Color(62),
+	Success:        termformat.ANSI256Color(82),
+	Warning:        termformat.ANSI256Color(214),
+	Error:          termformat.ANSI256Color(196),
+	Muted:          termformat.ANSI256Color(240),
+	Subtle:         termformat.ANSI256Color(238),
+	UserLabel:      termformat.ANSI256Color(33),
+	AssistantLabel: termformat.ANSI256Color(82),
+	ToolRunning:    termformat.ANSI256Color(214),
+	ToolDone:       termformat.ANSI256Color(240),
+	ToolFailed:     termformat.ANSI256Color(196),
+	InputPrompt:    termformat.ANSI256Color(33),
+	SelectedItem:   termformat.ANSI256Color(170),
+	UnselectedItem: termformat.ANSI256Color(252),
 }
 
 // LightTheme is a color scheme for light-background terminals.
 var LightTheme = Theme{
-	Primary:        "125",
-	Secondary:      "61",
-	Success:        "28",
-	Warning:        "130",
-	Error:          "160",
-	Muted:          "246",
-	Subtle:         "250",
-	UserLabel:      "25",
-	AssistantLabel: "28",
-	ToolRunning:    "130",
-	ToolDone:       "246",
-	ToolFailed:     "160",
-	InputPrompt:    "25",
-	SelectedItem:   "125",
-	UnselectedItem: "236",
+	Primary:        termformat.ANSI256Color(125),
+	Secondary:      termformat.ANSI256Color(61),
+	Success:        termformat.ANSI256Color(28),
+	Warning:        termformat.ANSI256Color(130),
+	Error:          termformat.ANSI256Color(160),
+	Muted:          termformat.ANSI256Color(246),
+	Subtle:         termformat.ANSI256Color(250),
+	UserLabel:      termformat.ANSI256Color(25),
+	AssistantLabel: termformat.ANSI256Color(28),
+	ToolRunning:    termformat.ANSI256Color(130),
+	ToolDone:       termformat.ANSI256Color(246),
+	ToolFailed:     termformat.ANSI256Color(160),
+	InputPrompt:    termformat.ANSI256Color(25),
+	SelectedItem:   termformat.ANSI256Color(125),
+	UnselectedItem: termformat.ANSI256Color(236),
 }
 
-// currentTheme is the active theme; defaults to DarkTheme.
 var currentTheme = DarkTheme
 
 // SetTheme sets the active theme and rebuilds all derived styles.

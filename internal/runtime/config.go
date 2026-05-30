@@ -97,6 +97,12 @@ func LoadConfig() *Config {
 	if len(s.BlockedTools) > 0 {
 		cfg.BlockedTools = s.BlockedTools
 	}
+	if s.APIKey != "" {
+		cfg.APIKey = s.APIKey
+	}
+	if s.BaseURL != "" {
+		cfg.BaseURL = s.BaseURL
+	}
 	if s.Theme != "" {
 		cfg.Theme = s.Theme
 	}

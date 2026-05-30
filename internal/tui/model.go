@@ -3,26 +3,22 @@ package tui
 import (
 	"ai-pr-review/internal/auth"
 	"ai-pr-review/internal/config"
+	"ai-pr-review/internal/q/termformat"
+	"ai-pr-review/internal/q/tui"
+	"ai-pr-review/internal/q/tui/tuicontrols"
 	"ai-pr-review/internal/runtime"
 	"context"
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"time"
 )
 
 const (
 	appVersion   = "0.1.0"
-	textareaRows = 3 // visible rows in the multi-line input area
+	textareaRows = 3
 )
 
-// modelEntry describes a selectable AI model in the picker overlay.
 type modelEntry struct {
 	id   string
 	desc string
@@ -40,7 +36,6 @@ var openAIModels = []modelEntry{
 	{"o1-mini", "Reasoning model — math and logic"},
 }
 
-// loginProvider describes a selectable AI provider in the /login flow.
 type loginProviderEntry struct {
 	id   string
 	name string
@@ -52,7 +47,6 @@ var loginProviders = []loginProviderEntry{
 	{"openai", "OpenAI", "GPT-4o and GPT-4o-mini models"},
 }
 
-// loginMethodEntry describes an auth method choice shown for a given provider.
 type loginMethodEntry struct {
 	id   string
 	name string
@@ -64,23 +58,22 @@ var anthropicAuthMethods = []loginMethodEntry{
 	{"api_key", "API Key", "Enter your Anthropic API key manually"},
 }
 
-// appState tracks what the TUI is currently doing.
 type appState int
 
 const (
-	stateInput          appState = iota // waiting for user input
-	stateBusy                           // streaming response from API
-	statePicker                         // model selection overlay
-	stateHelp                           // help panel overlay
-	statePermission                     // waiting for permission decision
-	stateLoginProvider                  // /login: provider picker
-	stateLoginMethod                    // /login: auth-method picker (Anthropic)
-	stateLoginAPIKey                    // /login: API key text input
-	stateLoginOAuth                     // /login: waiting for OAuth browser flow
-	stateAskUser                        // agent has asked the user a question
+	stateInput          appState = iota
+	stateBusy
+	statePicker
+	stateHelp
+	statePermission
+	stateLoginProvider
+	stateLoginMethod
+	stateLoginAPIKey
+	stateLoginOAuth
+	stateAskUser
 )
 
-// Bubble Tea messages for async streaming events.
+// Custom message types for the TUI event loop.
 type (
 	streamDeltaMsg    struct{ text string }
 	streamToolMsg     struct{ name, input string }
@@ -97,86 +90,64 @@ type (
 		question string
 		reply    chan string
 	}
+	loginCompleteMsg struct {
+		provider string
+		token    string
+		method   string
+		err      error
+	}
+	spinnerTickMsg struct{}
 )
 
-// loginCompleteMsg is sent when a /login flow finishes (success or failure).
-type loginCompleteMsg struct {
-	provider string // "anthropic" or "openai"
-	token    string // API key or OAuth access token
-	method   string // "api_key" or "oauth"
-	err      error
-}
-
-// Model is the Bubble Tea application model.
 type Model struct {
 	state  appState
 	width  int
 	height int
 	ready  bool
 
-	viewport viewport.Model
-	textarea textarea.Model
-	spinner  spinner.Model
+	viewport *tuicontrols.View
+	textarea *tuicontrols.TextArea
 
-	// history for ↑/↓ input navigation
 	history *inputHistory
 
-	// model picker state
 	pickerCursor int
 
-	// content buffers
-	viewBuf   string // finalized history (all complete turns)
-	streamBuf string // in-progress streaming content
+	viewBuf   string
+	streamBuf string
 
-	// token counts for status bar
 	inputTokens  int
 	outputTokens int
 
-	// whether any streaming content has arrived (suppresses spinner)
 	hasStreamContent bool
 
-	// channel from active streaming goroutine
 	streamChan chan runtime.TurnEvent
 
-	// permission ask state
 	permToolName  string
 	permToolInput string
 	permReplyCh   chan runtime.PermDecision
 
-	// ask_user state
 	askUserQuestion string
 	askUserReplyCh  chan string
-	askUserInput    textinput.Model
+	askUserInput    string
 
-	// /login flow state
-	loginCursor   int             // cursor for provider / method pickers
-	loginProvider string          // provider selected during login
-	loginKeyInput textinput.Model // API key entry input (single-line, masked)
+	loginCursor   int
+	loginProvider string
+	loginKeyInput string
 
-	// app deps
+	spinnerFrame int
+
 	loop *runtime.ConversationLoop
 	cfg  *runtime.Config
+	tui  *tui.TUI
 }
 
-// NewModel creates a new TUI model.
-func NewModel(cfg *runtime.Config, loop *runtime.ConversationLoop) Model {
-	ta := textarea.New()
+func NewModel(cfg *runtime.Config, loop *runtime.ConversationLoop) *Model {
+	ta := tuicontrols.NewTextArea(80, textareaRows)
 	ta.Placeholder = "Type a message or /help..."
-	ta.CharLimit = 8192
-	ta.ShowLineNumbers = false
-	ta.SetHeight(textareaRows)
-	// Focus the textarea so the cursor is visible from the first render.
-	// The blink Cmd is returned from Init().
-	ta.Focus() //nolint:errcheck
 
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(currentTheme.Primary)
-
-	return Model{
+	return &Model{
 		state:    stateInput,
 		textarea: ta,
-		spinner:  s,
 		history:  newInputHistory(),
 		loop:     loop,
 		cfg:      cfg,
@@ -184,67 +155,59 @@ func NewModel(cfg *runtime.Config, loop *runtime.ConversationLoop) Model {
 	}
 }
 
-// Init is the Bubble Tea Init function.
-func (m Model) Init() tea.Cmd {
-	// Start cursor blink for the textarea.
-	return m.textarea.Focus()
+func (m *Model) Init(t *tui.TUI) {
+	m.tui = t
+	_ = t.SendPeriodically(spinnerTickMsg{}, 100*time.Millisecond)
 }
 
-// --- Update -----------------------------------------------------------------
+func (m *Model) Update(t *tui.TUI, msg tui.Message) {
+	m.tui = t
 
-// Update is the Bubble Tea Update function.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case tui.ResizeEvent:
 		m.width = msg.Width
 		m.height = msg.Height
 		if !m.ready {
 			m.ready = true
-			m = m.initViewport()
+			m.initViewport()
 		} else {
-			m = m.resizeViewport()
+			m.resizeViewport()
 		}
-		return m, nil
 
-	case tea.KeyMsg:
-		return m.handleKey(msg)
+	case tui.KeyEvent:
+		m.handleKey(msg)
 
 	case streamDeltaMsg:
 		if !m.hasStreamContent {
 			m.hasStreamContent = true
 		}
 		m.streamBuf += msg.text
-		m = m.refreshViewport()
-		return m, waitForStream(m.streamChan)
+		m.refreshViewport()
 
 	case streamToolMsg:
 		if !m.hasStreamContent {
 			m.hasStreamContent = true
 		}
-		line := toolRunningStyle.Render(fmt.Sprintf("  ◆ %s: %s\n", msg.name, truncate(msg.input, 60)))
+		line := toolRunningStyle.Wrap(fmt.Sprintf("  ◆ %s: %s\n", msg.name, truncate(msg.input, 60)))
 		m.streamBuf += line
-		m = m.refreshViewport()
-		return m, waitForStream(m.streamChan)
+		m.refreshViewport()
 
 	case streamToolDoneMsg:
 		suffix := ""
 		if msg.result != "" {
 			suffix = " → " + truncate(msg.result, 40)
 		}
-		line := toolDoneStyle.Render(fmt.Sprintf("  ✓ %s%s\n", msg.name, suffix))
+		line := toolDoneStyle.Wrap(fmt.Sprintf("  ✓ %s%s\n", msg.name, suffix))
 		m.streamBuf += line
-		m = m.refreshViewport()
-		return m, waitForStream(m.streamChan)
+		m.refreshViewport()
 
 	case streamUsageMsg:
 		m.inputTokens = msg.inputTokens
 		m.outputTokens = msg.outputTokens
-		return m, waitForStream(m.streamChan)
 
 	case streamDoneMsg:
-		// Commit streamBuf to viewBuf with token annotation.
 		if m.streamBuf != "" || m.hasStreamContent {
-			tokLine := statusStyle.Render(fmt.Sprintf(
+			tokLine := statusStyle.Wrap(fmt.Sprintf(
 				"\n\nTokens: %s in / %s out\n\n",
 				formatNum(m.inputTokens),
 				formatNum(m.outputTokens),
@@ -254,160 +217,170 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.hasStreamContent = false
 		m.state = stateInput
-		m = m.refreshViewport()
-		m.viewport.GotoBottom()
-		return m, nil
+		m.refreshViewport()
+		m.viewport.ScrollToBottom()
 
 	case streamWarnMsg:
-		m.viewBuf += warnStyle.Render(fmt.Sprintf("Warning: %s\n\n", msg.text))
-		m = m.refreshViewport()
-		return m, waitForStream(m.streamChan)
+		m.viewBuf += warnStyle.Wrap(fmt.Sprintf("Warning: %s\n\n", msg.text))
+		m.refreshViewport()
 
 	case streamPermAskMsg:
 		m.state = statePermission
 		m.permToolName = msg.name
 		m.permToolInput = msg.input
 		m.permReplyCh = msg.reply
-		m = m.refreshViewport()
-		return m, nil
 
 	case streamAskUserMsg:
-		ti := textinput.New()
-		ti.Placeholder = "Type your answer and press Enter..."
-		ti.CharLimit = 2048
-		ti.Focus()
-		m.askUserInput = ti
+		m.askUserInput = ""
 		m.askUserQuestion = msg.question
 		m.askUserReplyCh = msg.reply
 		m.state = stateAskUser
-		m = m.refreshViewport()
-		return m, nil
 
 	case streamErrMsg:
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("Error: %v\n\n", msg.err))
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Error: %v\n\n", msg.err))
 		m.streamBuf = ""
 		m.hasStreamContent = false
 		m.state = stateInput
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
 
 	case loginCompleteMsg:
-		return m.handleLoginComplete(msg)
+		m.handleLoginComplete(msg)
 
-	case spinner.TickMsg:
-		if (m.state == stateBusy && !m.hasStreamContent) || m.state == stateLoginOAuth {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
-		}
-		return m, nil
+	case spinnerTickMsg:
+		m.spinnerFrame++
 	}
-
-	return m, nil
 }
 
-// handleKey dispatches key events based on current state.
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) View() string {
+	if !m.ready {
+		return "Initialising...\n"
+	}
+
 	switch m.state {
 	case statePicker:
-		return m.handlePickerKey(msg)
+		return m.viewPicker()
 	case stateHelp:
-		return m.handleHelpKey(msg)
+		return m.viewHelp()
 	case statePermission:
-		return m.handlePermissionKey(msg)
+		return m.viewPermission()
 	case stateAskUser:
-		return m.handleAskUserKey(msg)
+		return m.viewAskUser()
 	case stateLoginProvider:
-		return m.handleLoginProviderKey(msg)
+		return m.viewLoginProvider()
 	case stateLoginMethod:
-		return m.handleLoginMethodKey(msg)
+		return m.viewLoginMethod()
 	case stateLoginAPIKey:
-		return m.handleLoginAPIKeyKey(msg)
+		return m.viewLoginAPIKey()
 	case stateLoginOAuth:
-		return m.handleLoginOAuthKey(msg)
+		return m.viewLoginOAuth()
+	}
+
+	header := m.renderHeader()
+	divider := dividerStyle.Wrap(strings.Repeat("─", m.width))
+	hint := statusStyle.Wrap("Enter=send  Ctrl+J=newline  ↑↓=history  PgUp/PgDn=scroll")
+	statusLine := m.renderStatusBar()
+	inputArea := m.renderInputArea()
+
+	return strings.Join([]string{
+		header,
+		m.viewport.View(),
+		divider,
+		inputArea,
+		hint,
+		statusLine,
+	}, "\n")
+}
+
+func (m *Model) handleKey(msg tui.KeyEvent) {
+	switch m.state {
+	case statePicker:
+		m.handlePickerKey(msg)
+		return
+	case stateHelp:
+		m.handleHelpKey(msg)
+		return
+	case statePermission:
+		m.handlePermissionKey(msg)
+		return
+	case stateAskUser:
+		m.handleAskUserKey(msg)
+		return
+	case stateLoginProvider:
+		m.handleLoginProviderKey(msg)
+		return
+	case stateLoginMethod:
+		m.handleLoginMethodKey(msg)
+		return
+	case stateLoginAPIKey:
+		m.handleLoginAPIKeyKey(msg)
+		return
+	case stateLoginOAuth:
+		m.handleLoginOAuthKey(msg)
+		return
 	case stateBusy:
-		if msg.Type == tea.KeyCtrlC {
-			return m, tea.Quit
+		if msg.ControlKey == tui.ControlKeyCtrlC {
+			m.tui.Quit()
 		}
-		return m, nil
+		return
 	}
 
 	// stateInput
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
+	switch msg.ControlKey {
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
 
-	case tea.KeyEnter:
-		// Submit the message.
-		return m.handleSubmit()
+	case tui.ControlKeyEnter:
+		m.handleSubmit()
 
-	case tea.KeyCtrlJ:
-		// Ctrl+J inserts a real newline into the multi-line input.
+	case tui.ControlKeyCtrlJ:
 		m.history.Reset()
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		return m, cmd
+		m.textarea.Update(m.tui, msg)
 
-	case tea.KeyUp:
-		// Navigate to previous history entry when input is single-line.
-		if !strings.Contains(m.textarea.Value(), "\n") {
-			prev := m.history.Prev(m.textarea.Value())
-			m.textarea.SetValue(prev)
-			return m, nil
+	case tui.ControlKeyUp:
+		if !strings.Contains(m.textarea.Contents(), "\n") {
+			prev := m.history.Prev(m.textarea.Contents())
+			m.textarea.SetContents(prev)
+			return
 		}
-		// Multi-line: let textarea handle cursor movement.
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
+		m.textarea.Update(m.tui, msg)
 
-	case tea.KeyDown:
-		// Navigate to next history entry when input is single-line.
-		if !strings.Contains(m.textarea.Value(), "\n") {
+	case tui.ControlKeyDown:
+		if !strings.Contains(m.textarea.Contents(), "\n") {
 			next := m.history.Next()
-			m.textarea.SetValue(next)
-			return m, nil
+			m.textarea.SetContents(next)
+			return
 		}
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
+		m.textarea.Update(m.tui, msg)
 
-	case tea.KeyPgUp, tea.KeyPgDown:
-		// Scroll the conversation viewport.
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+	case tui.ControlKeyPgUp, tui.ControlKeyPgDown:
+		m.viewport.Update(m.tui, msg)
 
 	default:
-		// All other keys go to the textarea. Reset history navigation on
-		// any edit so the draft is not accidentally discarded.
 		m.history.Reset()
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
+		m.textarea.Update(m.tui, msg)
 	}
 }
 
-// handleSubmit processes the current textarea value.
-func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(m.textarea.Value())
+func (m *Model) handleSubmit() {
+	text := strings.TrimSpace(m.textarea.Contents())
 	if text == "" {
-		return m, nil
+		return
 	}
-	m.textarea.Reset()
+	m.textarea.SetContents("")
 	m.history.Push(text)
 	m.history.Reset()
 
 	if strings.HasPrefix(text, "/") {
-		return m.handleSlashCommand(text)
+		m.handleSlashCommand(text)
+		return
 	}
-	return m.startMessage(text)
+	m.startMessage(text)
 }
 
-// handleSlashCommand processes built-in slash commands.
-func (m Model) handleSlashCommand(cmd string) (tea.Model, tea.Cmd) {
+func (m *Model) handleSlashCommand(cmd string) {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
-		return m, nil
+		return
 	}
 
 	switch parts[0] {
@@ -420,37 +393,32 @@ func (m Model) handleSlashCommand(cmd string) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		return m, nil
 
 	case "/help":
 		m.state = stateHelp
-		return m, nil
 
 	case "/login":
 		m.state = stateLoginProvider
 		m.loginCursor = 0
-		return m, nil
 
 	case "/clear":
 		m.loop.ClearSession()
-		m.viewBuf = statusStyle.Render("Session cleared.\n\n")
+		m.viewBuf = statusStyle.Wrap("Session cleared.\n\n")
 		m.streamBuf = ""
 		m.inputTokens = 0
 		m.outputTokens = 0
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
 
 	case "/session-list":
 		metas, err := m.loop.ListSessionsWithMeta()
 		if err != nil {
-			m.viewBuf += errorStyle.Render(fmt.Sprintf("Error listing sessions: %v\n\n", err))
+			m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Error listing sessions: %v\n\n", err))
 		} else if len(metas) == 0 {
-			m.viewBuf += statusStyle.Render("No saved sessions.\n\n")
+			m.viewBuf += statusStyle.Wrap("No saved sessions.\n\n")
 		} else {
-			m.viewBuf += statusStyle.Render(formatSessionList(metas) + "\n\n")
+			m.viewBuf += statusStyle.Wrap(formatSessionList(metas) + "\n\n")
 		}
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
 
 	case "/theme":
 		theme := "dark"
@@ -460,13 +428,12 @@ func (m Model) handleSlashCommand(cmd string) (tea.Model, tea.Cmd) {
 		switch theme {
 		case "light":
 			SetTheme(LightTheme)
-			m.viewBuf += statusStyle.Render("Theme: light.\n\n")
+			m.viewBuf += statusStyle.Wrap("Theme: light.\n\n")
 		default:
 			SetTheme(DarkTheme)
-			m.viewBuf += statusStyle.Render("Theme: dark.\n\n")
+			m.viewBuf += statusStyle.Wrap("Theme: dark.\n\n")
 		}
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
 
 	case "/auth":
 		sub := "status"
@@ -474,37 +441,34 @@ func (m Model) handleSlashCommand(cmd string) (tea.Model, tea.Cmd) {
 			sub = parts[1]
 		}
 		msg := m.handleAuthSubcommand(sub)
-		m.viewBuf += statusStyle.Render(msg + "\n\n")
-		m = m.refreshViewport()
-		return m, nil
+		m.viewBuf += statusStyle.Wrap(msg + "\n\n")
+		m.refreshViewport()
 
 	case "/session":
-		return m.handleSessionCommand(parts)
+		m.handleSessionCommand(parts)
 
 	case "/status":
-		return m.handleStatus()
+		m.handleStatus()
 
 	case "/init":
-		return m.handleInit()
+		m.handleInit()
 
 	case "/cost":
-		return m.handleCost()
+		m.handleCost()
 
 	case "/config":
-		return m.handleConfig(parts)
+		m.handleConfig(parts)
 
 	case "/exit", "/quit":
-		return m, tea.Quit
+		m.tui.Quit()
 
 	default:
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("Unknown command: %s  (type /help for commands)\n\n", parts[0]))
-		m = m.refreshViewport()
-		return m, nil
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Unknown command: %s  (type /help for commands)\n\n", parts[0]))
+		m.refreshViewport()
 	}
 }
 
-// handleSessionCommand handles /session list|save|load <name>.
-func (m Model) handleSessionCommand(parts []string) (tea.Model, tea.Cmd) {
+func (m *Model) handleSessionCommand(parts []string) {
 	sub := "list"
 	if len(parts) > 1 {
 		sub = parts[1]
@@ -513,11 +477,11 @@ func (m Model) handleSessionCommand(parts []string) (tea.Model, tea.Cmd) {
 	case "list":
 		metas, err := m.loop.ListSessionsWithMeta()
 		if err != nil {
-			m.viewBuf += errorStyle.Render(fmt.Sprintf("Error listing sessions: %v\n\n", err))
+			m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Error listing sessions: %v\n\n", err))
 		} else if len(metas) == 0 {
-			m.viewBuf += statusStyle.Render("No saved sessions.\n\n")
+			m.viewBuf += statusStyle.Wrap("No saved sessions.\n\n")
 		} else {
-			m.viewBuf += statusStyle.Render(formatSessionList(metas) + "\n\n")
+			m.viewBuf += statusStyle.Wrap(formatSessionList(metas) + "\n\n")
 		}
 	case "save":
 		name := ""
@@ -528,30 +492,28 @@ func (m Model) handleSessionCommand(parts []string) (tea.Model, tea.Cmd) {
 			m.loop.Session.ID = name
 		}
 		if err := m.loop.SaveCurrentSession(); err != nil {
-			m.viewBuf += errorStyle.Render(fmt.Sprintf("Error saving session: %v\n\n", err))
+			m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Error saving session: %v\n\n", err))
 		} else {
-			m.viewBuf += statusStyle.Render(fmt.Sprintf("Session saved: %s\n\n", m.loop.Session.ID))
+			m.viewBuf += statusStyle.Wrap(fmt.Sprintf("Session saved: %s\n\n", m.loop.Session.ID))
 		}
 	case "load":
 		if len(parts) < 3 {
-			m.viewBuf += errorStyle.Render("Usage: /session load <name>\n\n")
+			m.viewBuf += errorStyle.Wrap("Usage: /session load <name>\n\n")
 		} else {
 			id := parts[2]
 			if err := m.loop.LoadNamedSession(id); err != nil {
-				m.viewBuf += errorStyle.Render(fmt.Sprintf("Error loading session %q: %v\n\n", id, err))
+				m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Error loading session %q: %v\n\n", id, err))
 			} else {
-				m.viewBuf += statusStyle.Render(fmt.Sprintf("Session loaded: %s (%d messages)\n\n", id, m.loop.MessageCount()))
+				m.viewBuf += statusStyle.Wrap(fmt.Sprintf("Session loaded: %s (%d messages)\n\n", id, m.loop.MessageCount()))
 			}
 		}
 	default:
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("Unknown /session subcommand %q. Usage: /session list|save|load <name>\n\n", sub))
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Unknown /session subcommand %q. Usage: /session list|save|load <name>\n\n", sub))
 	}
-	m = m.refreshViewport()
-	return m, nil
+	m.refreshViewport()
 }
 
-// handleStatus shows current model, provider, permission mode, and session info.
-func (m Model) handleStatus() (tea.Model, tea.Cmd) {
+func (m *Model) handleStatus() {
 	permMode := "default"
 	if m.cfg.PermissionMode != "" {
 		permMode = m.cfg.PermissionMode
@@ -567,28 +529,24 @@ func (m Model) handleStatus() (tea.Model, tea.Cmd) {
 		fmt.Sprintf("Messages       : %d", m.loop.MessageCount()),
 		fmt.Sprintf("Tokens in/out  : %s / %s", formatNum(m.inputTokens), formatNum(m.outputTokens)),
 	}
-	m.viewBuf += statusStyle.Render(strings.Join(lines, "\n")+"\n\n")
-	m = m.refreshViewport()
-	return m, nil
+	m.viewBuf += statusStyle.Wrap(strings.Join(lines, "\n") + "\n\n")
+	m.refreshViewport()
 }
 
-// handleInit creates .ai-pr-review/settings.json with defaults.
-func (m Model) handleInit() (tea.Model, tea.Cmd) {
+func (m *Model) handleInit() {
 	err := config.InitProject(m.cfg.Model)
 	switch {
 	case err == nil:
-		m.viewBuf += statusStyle.Render("Created .ai-pr-review/settings.json with defaults.\n\n")
+		m.viewBuf += statusStyle.Wrap("Created .ai-pr-review/settings.json with defaults.\n\n")
 	case os.IsExist(err):
-		m.viewBuf += statusStyle.Render(".ai-pr-review/settings.json already exists — no changes made.\n\n")
+		m.viewBuf += statusStyle.Wrap(".ai-pr-review/settings.json already exists — no changes made.\n\n")
 	default:
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("init: %v\n\n", err))
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("init: %v\n\n", err))
 	}
-	m = m.refreshViewport()
-	return m, nil
+	m.refreshViewport()
 }
 
-// handleCost shows token usage and best-effort cost estimate for the session.
-func (m Model) handleCost() (tea.Model, tea.Cmd) {
+func (m *Model) handleCost() {
 	var report string
 	if m.loop.Usage != nil && m.loop.Usage.Turns > 0 {
 		report = m.loop.Usage.FormatSummary()
@@ -596,7 +554,6 @@ func (m Model) handleCost() (tea.Model, tea.Cmd) {
 			report += fmt.Sprintf("Compactions    : %d\n", m.loop.Compaction.CompactionCount)
 		}
 	} else {
-		// No turns recorded yet; fall back to compaction-state totals.
 		c := m.loop.Compaction
 		lines := []string{
 			fmt.Sprintf("Input tokens   : %s", formatNum(c.TotalInputTokens)),
@@ -606,59 +563,58 @@ func (m Model) handleCost() (tea.Model, tea.Cmd) {
 		}
 		report = strings.Join(lines, "\n")
 	}
-	m.viewBuf += statusStyle.Render(report + "\n\n")
-	m = m.refreshViewport()
-	return m, nil
+	m.viewBuf += statusStyle.Wrap(report + "\n\n")
+	m.refreshViewport()
 }
 
-// handleConfig handles /config [key [value]].
-func (m Model) handleConfig(parts []string) (tea.Model, tea.Cmd) {
+func (m *Model) handleConfig(parts []string) {
 	if len(parts) == 1 {
-		// Show all config.
 		permMode := m.cfg.PermissionMode
 		if permMode == "" {
 			permMode = "default"
 		}
 		lines := []string{
 			fmt.Sprintf("model          = %s", m.cfg.Model),
+			fmt.Sprintf("apiKey         = %s", maskString(m.cfg.APIKey)),
+			fmt.Sprintf("baseURL        = %s", m.cfg.BaseURL),
 			fmt.Sprintf("permissionMode = %s", permMode),
 			fmt.Sprintf("maxTokens      = %d", m.cfg.MaxTokens),
 			fmt.Sprintf("theme          = %s", m.cfg.Theme),
 		}
-		m.viewBuf += statusStyle.Render(strings.Join(lines, "\n")+"\n\n")
-		m = m.refreshViewport()
-		return m, nil
+		m.viewBuf += statusStyle.Wrap(strings.Join(lines, "\n") + "\n\n")
+		m.refreshViewport()
+		return
 	}
 
 	key := parts[1]
 	if len(parts) == 2 {
-		// Show single key.
 		val := m.configGet(key)
 		if val == "" {
-			m.viewBuf += errorStyle.Render(fmt.Sprintf("Unknown config key: %s\n\n", key))
+			m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Unknown config key: %s\n\n", key))
 		} else {
-			m.viewBuf += statusStyle.Render(fmt.Sprintf("%s = %s\n\n", key, val))
+			m.viewBuf += statusStyle.Wrap(fmt.Sprintf("%s = %s\n\n", key, val))
 		}
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
+		return
 	}
 
-	// Set value.
 	value := strings.Join(parts[2:], " ")
 	if err := m.configSet(key, value); err != nil {
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("config set: %v\n\n", err))
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("config set: %v\n\n", err))
 	} else {
-		m.viewBuf += statusStyle.Render(fmt.Sprintf("Set %s = %s\n\n", key, value))
+		m.viewBuf += statusStyle.Wrap(fmt.Sprintf("Set %s = %s\n\n", key, value))
 	}
-	m = m.refreshViewport()
-	return m, nil
+	m.refreshViewport()
 }
 
-// configGet returns the string value of a config key from the active Config.
-func (m Model) configGet(key string) string {
+func (m *Model) configGet(key string) string {
 	switch key {
 	case "model":
 		return m.cfg.Model
+	case "apiKey":
+		return maskString(m.cfg.APIKey)
+	case "baseURL":
+		return m.cfg.BaseURL
 	case "permissionMode":
 		if m.cfg.PermissionMode == "" {
 			return "default"
@@ -673,7 +629,6 @@ func (m Model) configGet(key string) string {
 	}
 }
 
-// configSet updates a config key in-memory and persists to project settings.json.
 func (m *Model) configSet(key, value string) error {
 	s := &config.Settings{}
 	switch key {
@@ -681,6 +636,12 @@ func (m *Model) configSet(key, value string) error {
 		m.cfg.Model = value
 		m.loop.Config.Model = value
 		s.Model = value
+	case "apiKey":
+		m.cfg.APIKey = value
+		s.APIKey = value
+	case "baseURL":
+		m.cfg.BaseURL = value
+		s.BaseURL = value
 	case "permissionMode":
 		m.cfg.PermissionMode = value
 		s.PermissionMode = value
@@ -699,8 +660,7 @@ func (m *Model) configSet(key, value string) error {
 	return config.WriteProject(s)
 }
 
-// handleAuthSubcommand executes a legacy /auth subcommand and returns output text.
-func (m Model) handleAuthSubcommand(sub string) string {
+func (m *Model) handleAuthSubcommand(sub string) string {
 	switch sub {
 	case "login":
 		td, err := auth.StartOAuthFlow()
@@ -738,173 +698,149 @@ func (m Model) handleAuthSubcommand(sub string) string {
 	}
 }
 
-// --- /login flow ------------------------------------------------------------
-
-// handleLoginProviderKey handles key input on the provider picker screen.
-func (m Model) handleLoginProviderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEsc:
+func (m *Model) handleLoginProviderKey(msg tui.KeyEvent) {
+	switch msg.ControlKey {
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
+	case tui.ControlKeyEsc:
 		m.state = stateInput
-		return m, nil
-	case tea.KeyUp:
+	case tui.ControlKeyUp:
 		if m.loginCursor > 0 {
 			m.loginCursor--
 		}
-		return m, nil
-	case tea.KeyDown:
+	case tui.ControlKeyDown:
 		if m.loginCursor < len(loginProviders)-1 {
 			m.loginCursor++
 		}
-		return m, nil
-	case tea.KeyEnter:
+	case tui.ControlKeyEnter:
 		chosen := loginProviders[m.loginCursor]
 		m.loginProvider = chosen.id
 		m.loginCursor = 0
-
 		switch chosen.id {
 		case "anthropic":
 			m.state = stateLoginMethod
 		default:
-			m = m.startAPIKeyInput()
+			m.startAPIKeyInput()
 		}
-		return m, nil
 	}
-	return m, nil
 }
 
-// handleLoginMethodKey handles key input on the auth-method picker (Anthropic).
-func (m Model) handleLoginMethodKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEsc:
+func (m *Model) handleLoginMethodKey(msg tui.KeyEvent) {
+	switch msg.ControlKey {
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
+	case tui.ControlKeyEsc:
 		m.state = stateLoginProvider
 		m.loginCursor = 0
-		return m, nil
-	case tea.KeyUp:
+	case tui.ControlKeyUp:
 		if m.loginCursor > 0 {
 			m.loginCursor--
 		}
-		return m, nil
-	case tea.KeyDown:
+	case tui.ControlKeyDown:
 		if m.loginCursor < len(anthropicAuthMethods)-1 {
 			m.loginCursor++
 		}
-		return m, nil
-	case tea.KeyEnter:
+	case tui.ControlKeyEnter:
 		chosen := anthropicAuthMethods[m.loginCursor]
 		m.loginCursor = 0
 		switch chosen.id {
 		case "oauth":
-			return m.startOAuthLogin()
+			m.startOAuthLogin()
 		default:
-			m = m.startAPIKeyInput()
-			return m, nil
+			m.startAPIKeyInput()
 		}
 	}
-	return m, nil
 }
 
-// startAPIKeyInput transitions to the API key entry state.
-func (m Model) startAPIKeyInput() Model {
-	ti := textinput.New()
-	ti.Placeholder = "Paste API key and press Enter..."
-	ti.EchoMode = textinput.EchoPassword
-	ti.CharLimit = 512
-	ti.Focus()
-	m.loginKeyInput = ti
+func (m *Model) startAPIKeyInput() {
+	m.loginKeyInput = ""
 	m.state = stateLoginAPIKey
-	return m
 }
 
-// handleLoginAPIKeyKey handles key input when the user is typing an API key.
-func (m Model) handleLoginAPIKeyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEsc:
+func (m *Model) handleLoginAPIKeyKey(msg tui.KeyEvent) {
+	switch msg.ControlKey {
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
+	case tui.ControlKeyEsc:
 		m.state = stateInput
-		return m, nil
-	case tea.KeyEnter:
-		apiKey := strings.TrimSpace(m.loginKeyInput.Value())
+	case tui.ControlKeyEnter:
+		apiKey := strings.TrimSpace(m.loginKeyInput)
 		if apiKey == "" {
-			m.viewBuf += errorStyle.Render("API key cannot be empty.\n\n")
+			m.viewBuf += errorStyle.Wrap("API key cannot be empty.\n\n")
 			m.state = stateInput
-			m = m.refreshViewport()
-			return m, nil
+			m.refreshViewport()
+			return
 		}
 		saveErr := auth.SetProviderAPIKey(m.loginProvider, apiKey)
 		if saveErr != nil {
-			return m.handleLoginComplete(loginCompleteMsg{err: saveErr})
+			m.handleLoginComplete(loginCompleteMsg{err: saveErr})
+			return
 		}
-		return m.handleLoginComplete(loginCompleteMsg{
+		m.handleLoginComplete(loginCompleteMsg{
 			provider: m.loginProvider,
 			token:    apiKey,
 			method:   "api_key",
 		})
+	default:
+		if msg.IsRunes() {
+			m.loginKeyInput += string(msg.Runes)
+		} else if msg.ControlKey == tui.ControlKeyBackspace {
+			if len(m.loginKeyInput) > 0 {
+				m.loginKeyInput = m.loginKeyInput[:len(m.loginKeyInput)-1]
+			}
+		}
 	}
-
-	var cmd tea.Cmd
-	m.loginKeyInput, cmd = m.loginKeyInput.Update(msg)
-	return m, cmd
 }
 
-// startOAuthLogin prepares the OAuth session, shows the URL, and waits in background.
-func (m Model) startOAuthLogin() (Model, tea.Cmd) {
+func (m *Model) startOAuthLogin() {
 	session, err := auth.PrepareOAuthFlow()
 	if err != nil {
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("OAuth setup failed: %v\n\n", err))
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("OAuth setup failed: %v\n\n", err))
 		m.state = stateInput
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
+		return
 	}
 
 	m.state = stateLoginOAuth
-	m.viewBuf += statusStyle.Render(fmt.Sprintf(
+	m.viewBuf += statusStyle.Wrap(fmt.Sprintf(
 		"Opening browser for Anthropic OAuth login...\n"+
 			"If your browser doesn't open, visit:\n  %s\n\n"+
-			"Waiting for callback… (5-minute timeout)\n\n",
+			"Waiting for callback... (5-minute timeout)\n\n",
 		session.AuthURL,
 	))
-	m = m.refreshViewport()
+	m.refreshViewport()
 
-	return m, tea.Batch(
-		m.spinner.Tick,
-		func() tea.Msg {
-			td, err := session.Complete()
-			if err != nil {
-				return loginCompleteMsg{err: err}
-			}
-			if err := auth.SetProviderOAuth("anthropic", td); err != nil {
-				return loginCompleteMsg{err: fmt.Errorf("save token: %w", err)}
-			}
-			return loginCompleteMsg{
-				provider: "anthropic",
-				token:    td.AccessToken,
-				method:   "oauth",
-			}
-		},
-	)
+	go func() {
+		td, err := session.Complete()
+		if err != nil {
+			m.tui.Send(loginCompleteMsg{err: err})
+			return
+		}
+		if err := auth.SetProviderOAuth("anthropic", td); err != nil {
+			m.tui.Send(loginCompleteMsg{err: fmt.Errorf("save token: %w", err)})
+			return
+		}
+		m.tui.Send(loginCompleteMsg{
+			provider: "anthropic",
+			token:    td.AccessToken,
+			method:   "oauth",
+		})
+	}()
 }
 
-// handleLoginOAuthKey lets the user Ctrl+C to abort the OAuth wait.
-func (m Model) handleLoginOAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC {
-		return m, tea.Quit
+func (m *Model) handleLoginOAuthKey(msg tui.KeyEvent) {
+	if msg.ControlKey == tui.ControlKeyCtrlC {
+		m.tui.Quit()
 	}
-	return m, nil
 }
 
-// handleLoginComplete is called when a /login flow finishes (success or error).
-func (m Model) handleLoginComplete(result loginCompleteMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleLoginComplete(result loginCompleteMsg) {
 	m.state = stateInput
 
 	if result.err != nil {
-		m.viewBuf += errorStyle.Render(fmt.Sprintf("Login failed: %v\n\n", result.err))
-		m = m.refreshViewport()
-		return m, nil
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf("Login failed: %v\n\n", result.err))
+		m.refreshViewport()
+		return
 	}
 
 	m.cfg.ProviderName = result.provider
@@ -927,77 +863,73 @@ func (m Model) handleLoginComplete(result loginCompleteMsg) (tea.Model, tea.Cmd)
 
 	client, err := runtime.NewProviderClient(m.cfg)
 	if err != nil {
-		m.viewBuf += errorStyle.Render(fmt.Sprintf(
+		m.viewBuf += errorStyle.Wrap(fmt.Sprintf(
 			"Login succeeded but could not create provider client: %v\n\n", err))
-		m = m.refreshViewport()
-		return m, nil
+		m.refreshViewport()
+		return
 	}
 	m.loop.Client = client
 
-	m.viewBuf += statusStyle.Render(fmt.Sprintf(
+	m.viewBuf += statusStyle.Wrap(fmt.Sprintf(
 		"Logged in to %s via %s. Model set to %s. Ready!\n\n",
 		result.provider, result.method, m.cfg.Model,
 	))
-	m = m.refreshViewport()
-	return m, nil
+	m.refreshViewport()
 }
 
-// handleAskUserKey handles key input when the agent is waiting for a user answer.
-func (m Model) handleAskUserKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEsc:
-		// Cancel — send empty string so the agent loop can proceed.
+func (m *Model) handleAskUserKey(msg tui.KeyEvent) {
+	switch msg.ControlKey {
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
+	case tui.ControlKeyEsc:
 		ch := m.askUserReplyCh
 		m.askUserReplyCh = nil
 		m.askUserQuestion = ""
 		m.state = stateBusy
-		m = m.refreshViewport()
-		return m, tea.Batch(
-			func() tea.Msg { ch <- ""; return nil },
-			waitForStream(m.streamChan),
-		)
-	case tea.KeyEnter:
-		answer := strings.TrimSpace(m.askUserInput.Value())
+		go func() { ch <- "" }()
+	case tui.ControlKeyEnter:
+		answer := strings.TrimSpace(m.askUserInput)
 		ch := m.askUserReplyCh
 		m.askUserReplyCh = nil
 		m.askUserQuestion = ""
 		m.state = stateBusy
-		m = m.refreshViewport()
-		return m, tea.Batch(
-			func() tea.Msg { ch <- answer; return nil },
-			waitForStream(m.streamChan),
-		)
+		go func() { ch <- answer }()
+	default:
+		if msg.IsRunes() {
+			m.askUserInput += string(msg.Runes)
+		} else if msg.ControlKey == tui.ControlKeyBackspace {
+			if len(m.askUserInput) > 0 {
+				m.askUserInput = m.askUserInput[:len(m.askUserInput)-1]
+			}
+		}
 	}
-	var cmd tea.Cmd
-	m.askUserInput, cmd = m.askUserInput.Update(msg)
-	return m, cmd
 }
 
-// viewAskUser renders the ask-user question overlay.
-func (m Model) viewAskUser() string {
+func (m *Model) viewAskUser() string {
 	q := m.askUserQuestion
 	if len(q) > 200 {
 		q = q[:200] + "..."
 	}
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render("Agent Question"),
+	inputDisplay := m.askUserInput
+	if inputDisplay == "" {
+		inputDisplay = " "
+	}
+	content := strings.Join([]string{
+		headerStyle.Wrap("Agent Question"),
 		"",
-		"  "+q,
+		"  " + q,
 		"",
-		"  "+m.askUserInput.View(),
+		"  " + inputDisplay,
 		"",
-		statusStyle.Render("  Enter to answer  •  Esc to skip  •  Ctrl+C to quit"),
-	)
-	box := helpBoxStyle.Width(min(72, m.width-4)).Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+		statusStyle.Wrap("  Enter to answer  •  Esc to skip  •  Ctrl+C to quit"),
+	}, "\n")
+	box := helpBoxStyle.Apply(content)
+	return m.centerBox(box)
 }
 
-// startMessage begins a streaming conversation turn.
-func (m Model) startMessage(text string) (tea.Model, tea.Cmd) {
-	m.viewBuf += userLabelStyle.Render("You") + ": " + text + "\n\n"
-	m.viewBuf += assistantLabelStyle.Render("Claude") + ": "
+func (m *Model) startMessage(text string) {
+	m.viewBuf += userLabelStyle.Wrap("You") + ": " + text + "\n\n"
+	m.viewBuf += assistantLabelStyle.Wrap("Claude") + ": "
 	m.state = stateBusy
 	m.hasStreamContent = false
 
@@ -1010,62 +942,77 @@ func (m Model) startMessage(text string) (tea.Model, tea.Cmd) {
 		loop.SendMessageStreaming(context.Background(), text, ch) //nolint:errcheck
 	}()
 
-	m = m.refreshViewport()
-	return m, tea.Batch(
-		m.spinner.Tick,
-		waitForStream(ch),
-	)
+	go m.readStream(m.tui, ch)
+	m.refreshViewport()
 }
 
-// handlePickerKey handles keys when the model picker overlay is shown.
-func (m Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) readStream(t *tui.TUI, ch <-chan runtime.TurnEvent) {
+	for {
+		ev, ok := <-ch
+		if !ok {
+			t.Send(streamDoneMsg{})
+			return
+		}
+		switch ev.Type {
+		case runtime.TurnEventTextDelta:
+			t.Send(streamDeltaMsg{text: ev.Text})
+		case runtime.TurnEventToolStart:
+			t.Send(streamToolMsg{name: ev.ToolName, input: ev.ToolInput})
+		case runtime.TurnEventToolDone:
+			t.Send(streamToolDoneMsg{name: ev.ToolName, result: ev.ToolResult})
+		case runtime.TurnEventUsage:
+			t.Send(streamUsageMsg{inputTokens: ev.InputTokens, outputTokens: ev.OutputTokens})
+		case runtime.TurnEventDone:
+			t.Send(streamDoneMsg{})
+		case runtime.TurnEventError:
+			t.Send(streamErrMsg{err: ev.Err})
+		case runtime.TurnEventPermissionAsk:
+			t.Send(streamPermAskMsg{name: ev.ToolName, input: ev.ToolInput, reply: ev.PermReply})
+		case runtime.TurnEventAskUser:
+			t.Send(streamAskUserMsg{question: ev.ToolInput, reply: ev.AskUserReply})
+		}
+	}
+}
+
+func (m *Model) handlePickerKey(msg tui.KeyEvent) {
 	models := m.activeModels()
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch msg.ControlKey {
+	case tui.ControlKeyEsc:
 		m.state = stateInput
-		return m, nil
-	case tea.KeyEnter:
+	case tui.ControlKeyEnter:
 		chosen := models[m.pickerCursor]
 		m.cfg.Model = chosen.id
 		m.loop.Config.Model = chosen.id
-		m.viewBuf += statusStyle.Render(fmt.Sprintf("Model changed to %s\n\n", chosen.id))
+		m.viewBuf += statusStyle.Wrap(fmt.Sprintf("Model changed to %s\n\n", chosen.id))
 		m.state = stateInput
-		m = m.refreshViewport()
-		return m, nil
-	case tea.KeyUp:
+		m.refreshViewport()
+	case tui.ControlKeyUp:
 		if m.pickerCursor > 0 {
 			m.pickerCursor--
 		}
-		return m, nil
-	case tea.KeyDown:
+	case tui.ControlKeyDown:
 		if m.pickerCursor < len(models)-1 {
 			m.pickerCursor++
 		}
-		return m, nil
-	case tea.KeyCtrlC:
-		return m, tea.Quit
+	case tui.ControlKeyCtrlC:
+		m.tui.Quit()
 	}
-	return m, nil
 }
 
-// handleHelpKey handles keys when the help overlay is shown.
-func (m Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleHelpKey(msg tui.KeyEvent) {
 	switch {
-	case msg.Type == tea.KeyEsc, msg.Type == tea.KeyEnter, msg.String() == "q":
+	case msg.ControlKey == tui.ControlKeyEsc, msg.ControlKey == tui.ControlKeyEnter, string(msg.Runes) == "q":
 		m.state = stateInput
-		return m, nil
-	case msg.Type == tea.KeyCtrlC:
-		return m, tea.Quit
+	case msg.ControlKey == tui.ControlKeyCtrlC:
+		m.tui.Quit()
 	}
-	return m, nil
 }
 
-// handlePermissionKey handles keys when a permission decision is pending.
-func (m Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handlePermissionKey(msg tui.KeyEvent) {
 	var decision runtime.PermDecision
 	handled := true
 
-	switch msg.String() {
+	switch string(msg.Runes) {
 	case "y", "Y":
 		decision = runtime.PermDecisionAllowOnce
 	case "a", "A":
@@ -1073,14 +1020,15 @@ func (m Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "N":
 		decision = runtime.PermDecisionDeny
 	default:
-		if msg.Type == tea.KeyCtrlC {
-			return m, tea.Quit
+		if msg.ControlKey == tui.ControlKeyCtrlC {
+			m.tui.Quit()
+			return
 		}
 		handled = false
 	}
 
 	if !handled {
-		return m, nil
+		return
 	}
 
 	ch := m.permReplyCh
@@ -1088,80 +1036,182 @@ func (m Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.permToolName = ""
 	m.permToolInput = ""
 	m.state = stateBusy
-	m = m.refreshViewport()
 
-	return m, tea.Batch(
-		func() tea.Msg {
-			ch <- decision
-			return nil
-		},
-		waitForStream(m.streamChan),
-	)
+	go func() { ch <- decision }()
 }
 
-// --- View -------------------------------------------------------------------
-
-// View is the Bubble Tea View function.
-func (m Model) View() string {
-	if !m.ready {
-		return "Initializing…\n"
+func (m *Model) viewPermission() string {
+	tool := userLabelStyle.Wrap(m.permToolName)
+	inp := m.permToolInput
+	if len(inp) > 60 {
+		inp = inp[:60] + "..."
 	}
-
-	switch m.state {
-	case statePicker:
-		return m.viewPicker()
-	case stateHelp:
-		return m.viewHelp()
-	case statePermission:
-		return m.viewPermission()
-	case stateAskUser:
-		return m.viewAskUser()
-	case stateLoginProvider:
-		return m.viewLoginProvider()
-	case stateLoginMethod:
-		return m.viewLoginMethod()
-	case stateLoginAPIKey:
-		return m.viewLoginAPIKey()
-	case stateLoginOAuth:
-		return m.viewLoginOAuth()
-	}
-
-	header := m.renderHeader()
-	divider := dividerStyle.Render(strings.Repeat("─", m.width))
-	hint := statusStyle.Render("Enter=send  Ctrl+J=newline  ↑↓=history  PgUp/PgDn=scroll")
-	statusLine := m.renderStatusBar()
-	inputArea := m.renderInputArea()
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		m.viewport.View(),
-		divider,
-		inputArea,
-		hint,
-		statusLine,
-	)
+	prompt := fmt.Sprintf("Allow %s: %s?", tool, inp)
+	hint := statusStyle.Wrap("[y]es-once  [a]lways  [n]o")
+	content := strings.Join([]string{
+		headerStyle.Wrap("Permission Required"),
+		"",
+		"  " + prompt,
+		"",
+		"  " + hint,
+	}, "\n")
+	box := helpBoxStyle.Apply(content)
+	return m.centerBox(box)
 }
 
-func (m Model) renderHeader() string {
-	title := headerStyle.Render("AI PR Review v" + appVersion)
-	tag := modelTagStyle.Render(fmt.Sprintf("  [%s] %s", m.cfg.ProviderName, m.cfg.Model))
+func (m *Model) viewPicker() string {
+	var b strings.Builder
+	b.WriteString(pickerHeaderStyle.Wrap("Select Model") + "\n")
+	b.WriteString(statusStyle.Wrap("  ↑/↓ navigate  Enter select  Esc cancel") + "\n\n")
+
+	for i, km := range m.activeModels() {
+		cursor := "  "
+		style := unselectedModelStyle
+		if i == m.pickerCursor {
+			cursor = "▶ "
+			style = selectedModelStyle
+		}
+		b.WriteString(cursor + style.Wrap(km.id) + "\n")
+		b.WriteString("    " + statusStyle.Wrap(km.desc) + "\n")
+	}
+
+	box := helpBoxStyle.Apply(b.String())
+	return m.centerBox(box)
+}
+
+func (m *Model) viewHelp() string {
+	content := strings.Join([]string{
+		headerStyle.Wrap("AI PR Review — Commands"),
+		"",
+		statusStyle.Wrap("Auth & Provider"),
+		"  " + userLabelStyle.Wrap("/login") + "                          Multi-provider login flow",
+		"  " + userLabelStyle.Wrap("/auth") + " login|logout|status       Legacy OAuth commands",
+		"",
+		statusStyle.Wrap("Model & Config"),
+		"  " + userLabelStyle.Wrap("/model") + "                          Change the active model (picker)",
+		"  " + userLabelStyle.Wrap("/config") + "                         Show all config values",
+		"  " + userLabelStyle.Wrap("/config") + " <key>                   Show one config value",
+		"  " + userLabelStyle.Wrap("/config") + " <key> <value>           Set config value (saves to project)",
+		"  " + userLabelStyle.Wrap("/init") + "                           Create .ai-pr-review/settings.json",
+		"  " + userLabelStyle.Wrap("/theme") + " dark|light               Switch TUI color theme",
+		"  " + userLabelStyle.Wrap("/status") + "                         Show model/provider/session info",
+		"  " + userLabelStyle.Wrap("/cost") + "                           Show token usage this session",
+		"",
+		statusStyle.Wrap("Session"),
+		"  " + userLabelStyle.Wrap("/clear") + "                          Clear conversation history",
+		"  " + userLabelStyle.Wrap("/session") + " list                   List saved sessions",
+		"  " + userLabelStyle.Wrap("/session") + " save [name]            Save current session",
+		"  " + userLabelStyle.Wrap("/session") + " load <name>            Load a saved session",
+		"  " + userLabelStyle.Wrap("/session-list") + "                   Alias for /session list",
+		"",
+		statusStyle.Wrap("Other"),
+		"  " + userLabelStyle.Wrap("/help") + "                           Show this help",
+		"  " + userLabelStyle.Wrap("/exit") + " / " + userLabelStyle.Wrap("/quit") + "                     Exit (session auto-saved)",
+		"",
+		statusStyle.Wrap("Input:"),
+		"  " + userLabelStyle.Wrap("Enter") + "          Send message",
+		"  " + userLabelStyle.Wrap("Ctrl+J") + "         Insert newline (multi-line input)",
+		"  " + userLabelStyle.Wrap("↑ / ↓") + "          Navigate input history (single-line mode)",
+		"  " + userLabelStyle.Wrap("PgUp / PgDn") + "    Scroll conversation",
+		"  " + userLabelStyle.Wrap("Ctrl+C") + "         Exit",
+		"",
+		statusStyle.Wrap("Esc / Enter / q to close this panel"),
+	}, "\n")
+	box := helpBoxStyle.Apply(content)
+	return m.centerBox(box)
+}
+
+func (m *Model) viewLoginProvider() string {
+	var b strings.Builder
+	b.WriteString(pickerHeaderStyle.Wrap("Login — Choose Provider") + "\n")
+	b.WriteString(statusStyle.Wrap("  ↑/↓ navigate  Enter select  Esc cancel") + "\n\n")
+	for i, p := range loginProviders {
+		cursor := "  "
+		style := unselectedModelStyle
+		if i == m.loginCursor {
+			cursor = "▶ "
+			style = selectedModelStyle
+		}
+		b.WriteString(cursor + style.Wrap(p.name) + "\n")
+		b.WriteString("    " + statusStyle.Wrap(p.desc) + "\n")
+	}
+	box := helpBoxStyle.Apply(b.String())
+	return m.centerBox(box)
+}
+
+func (m *Model) viewLoginMethod() string {
+	var b strings.Builder
+	b.WriteString(pickerHeaderStyle.Wrap("Login — Anthropic Auth Method") + "\n")
+	b.WriteString(statusStyle.Wrap("  ↑/↓ navigate  Enter select  Esc back") + "\n\n")
+	for i, meth := range anthropicAuthMethods {
+		cursor := "  "
+		style := unselectedModelStyle
+		if i == m.loginCursor {
+			cursor = "▶ "
+			style = selectedModelStyle
+		}
+		b.WriteString(cursor + style.Wrap(meth.name) + "\n")
+		b.WriteString("    " + statusStyle.Wrap(meth.desc) + "\n")
+	}
+	box := helpBoxStyle.Apply(b.String())
+	return m.centerBox(box)
+}
+
+func (m *Model) viewLoginAPIKey() string {
+	providerName := m.loginProvider
+	if providerName == "" {
+		providerName = "provider"
+	}
+	masked := strings.Repeat("*", len(m.loginKeyInput))
+	if masked == "" {
+		masked = " "
+	}
+	content := strings.Join([]string{
+		pickerHeaderStyle.Wrap(fmt.Sprintf("Login — %s API Key", providerName)),
+		"",
+		"  " + statusStyle.Wrap("Paste your API key below (input is masked):"),
+		"  " + masked,
+		"",
+		"  " + statusStyle.Wrap("Enter to confirm  •  Esc to cancel"),
+	}, "\n")
+	box := helpBoxStyle.Apply(content)
+	return m.centerBox(box)
+}
+
+func (m *Model) viewLoginOAuth() string {
+	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spin := spinChars[m.spinnerFrame%len(spinChars)]
+	content := strings.Join([]string{
+		pickerHeaderStyle.Wrap("Login — Anthropic OAuth"),
+		"",
+		"  " + spin + " " + statusStyle.Wrap("Waiting for browser login..."),
+		"",
+		"  " + statusStyle.Wrap("Complete the login in your browser, then return here."),
+		"  " + statusStyle.Wrap("Ctrl+C to quit."),
+	}, "\n")
+	box := helpBoxStyle.Apply(content)
+	return m.centerBox(box)
+}
+
+func (m *Model) renderHeader() string {
+	title := headerStyle.Wrap("AI PR Review v" + appVersion)
+	tag := modelTagStyle.Wrap(fmt.Sprintf("  [%s] %s", m.cfg.ProviderName, m.cfg.Model))
 	return title + tag
 }
 
-func (m Model) renderStatusBar() string {
+func (m *Model) renderStatusBar() string {
 	if m.inputTokens > 0 || m.outputTokens > 0 {
-		return statusStyle.Render(fmt.Sprintf(
+		return statusStyle.Wrap(fmt.Sprintf(
 			"Tokens: %s in / %s out  │  Session: %s",
 			formatNum(m.inputTokens), formatNum(m.outputTokens),
 			m.loop.Session.ID,
 		))
 	}
-	return statusStyle.Render("Session: " + m.loop.Session.ID)
+	return statusStyle.Wrap("Session: " + m.loop.Session.ID)
 }
 
-// renderInputArea renders the multi-line input with a "> " prefix on the first line.
-func (m Model) renderInputArea() string {
-	prompt := inputPromptStyle.Render("> ")
+func (m *Model) renderInputArea() string {
+	prompt := inputPromptStyle.Wrap("> ")
 	tv := m.textarea.View()
 	lines := strings.Split(tv, "\n")
 	result := make([]string, len(lines))
@@ -1175,218 +1225,30 @@ func (m Model) renderInputArea() string {
 	return strings.Join(result, "\n")
 }
 
-// activeModels returns the model list appropriate for the current provider.
-func (m Model) activeModels() []modelEntry {
+func (m *Model) activeModels() []modelEntry {
 	if m.cfg.ProviderName == "openai" {
 		return openAIModels
 	}
 	return anthropicModels
 }
 
-func (m Model) viewPicker() string {
-	var b strings.Builder
-	b.WriteString(pickerHeaderStyle.Render("Select Model") + "\n")
-	b.WriteString(statusStyle.Render("  ↑/↓ navigate  Enter select  Esc cancel") + "\n\n")
-
-	for i, km := range m.activeModels() {
-		cursor := "  "
-		style := unselectedModelStyle
-		if i == m.pickerCursor {
-			cursor = "▶ "
-			style = selectedModelStyle
-		}
-		b.WriteString(cursor + style.Render(km.id) + "\n")
-		b.WriteString("    " + statusStyle.Render(km.desc) + "\n")
-	}
-
-	return b.String()
-}
-
-func (m Model) viewHelp() string {
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render("AI PR Review — Commands"),
-		"",
-		statusStyle.Render("Auth & Provider"),
-		"  "+userLabelStyle.Render("/login")+"                          Multi-provider login flow",
-		"  "+userLabelStyle.Render("/auth")+" login|logout|status       Legacy OAuth commands",
-		"",
-		statusStyle.Render("Model & Config"),
-		"  "+userLabelStyle.Render("/model")+"                          Change the active model (picker)",
-		"  "+userLabelStyle.Render("/config")+"                         Show all config values",
-		"  "+userLabelStyle.Render("/config")+" <key>                   Show one config value",
-		"  "+userLabelStyle.Render("/config")+" <key> <value>           Set config value (saves to project)",
-		"  "+userLabelStyle.Render("/init")+"                           Create .ai-pr-review/settings.json",
-		"  "+userLabelStyle.Render("/theme")+" dark|light               Switch TUI color theme",
-		"  "+userLabelStyle.Render("/status")+"                         Show model/provider/session info",
-		"  "+userLabelStyle.Render("/cost")+"                           Show token usage this session",
-		"",
-		statusStyle.Render("Session"),
-		"  "+userLabelStyle.Render("/clear")+"                          Clear conversation history",
-		"  "+userLabelStyle.Render("/session")+" list                   List saved sessions",
-		"  "+userLabelStyle.Render("/session")+" save [name]            Save current session",
-		"  "+userLabelStyle.Render("/session")+" load <name>            Load a saved session",
-		"  "+userLabelStyle.Render("/session-list")+"                   Alias for /session list",
-		"",
-		statusStyle.Render("Other"),
-		"  "+userLabelStyle.Render("/help")+"                           Show this help",
-		"  "+userLabelStyle.Render("/exit")+" / "+userLabelStyle.Render("/quit")+"                     Exit (session auto-saved)",
-		"",
-		statusStyle.Render("Input:"),
-		"  "+userLabelStyle.Render("Enter")+"          Send message",
-		"  "+userLabelStyle.Render("Ctrl+J")+"         Insert newline (multi-line input)",
-		"  "+userLabelStyle.Render("↑ / ↓")+"          Navigate input history (single-line mode)",
-		"  "+userLabelStyle.Render("PgUp / PgDn")+"    Scroll conversation",
-		"  "+userLabelStyle.Render("Ctrl+C")+"         Exit",
-		"",
-		statusStyle.Render("Esc / Enter / q to close this panel"),
-	)
-	box := helpBoxStyle.Width(min(80, m.width-4)).Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-func (m Model) viewPermission() string {
-	tool := userLabelStyle.Render(m.permToolName)
-	inp := m.permToolInput
-	if len(inp) > 60 {
-		inp = inp[:60] + "..."
-	}
-	prompt := fmt.Sprintf("Allow %s: %s?", tool, inp)
-	hint := statusStyle.Render("[y]es-once  [a]lways  [n]o")
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render("Permission Required"),
-		"",
-		"  "+prompt,
-		"",
-		"  "+hint,
-	)
-	box := helpBoxStyle.Width(min(72, m.width-4)).Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// viewLoginProvider renders the provider selection screen.
-func (m Model) viewLoginProvider() string {
-	var b strings.Builder
-	b.WriteString(pickerHeaderStyle.Render("Login — Choose Provider") + "\n")
-	b.WriteString(statusStyle.Render("  ↑/↓ navigate  Enter select  Esc cancel") + "\n\n")
-	for i, p := range loginProviders {
-		cursor := "  "
-		style := unselectedModelStyle
-		if i == m.loginCursor {
-			cursor = "▶ "
-			style = selectedModelStyle
-		}
-		b.WriteString(cursor + style.Render(p.name) + "\n")
-		b.WriteString("    " + statusStyle.Render(p.desc) + "\n")
-	}
-	box := helpBoxStyle.Width(min(60, m.width-4)).Render(b.String())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// viewLoginMethod renders the auth-method selection screen (Anthropic).
-func (m Model) viewLoginMethod() string {
-	var b strings.Builder
-	b.WriteString(pickerHeaderStyle.Render("Login — Anthropic Auth Method") + "\n")
-	b.WriteString(statusStyle.Render("  ↑/↓ navigate  Enter select  Esc back") + "\n\n")
-	for i, meth := range anthropicAuthMethods {
-		cursor := "  "
-		style := unselectedModelStyle
-		if i == m.loginCursor {
-			cursor = "▶ "
-			style = selectedModelStyle
-		}
-		b.WriteString(cursor + style.Render(meth.name) + "\n")
-		b.WriteString("    " + statusStyle.Render(meth.desc) + "\n")
-	}
-	box := helpBoxStyle.Width(min(60, m.width-4)).Render(b.String())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// viewLoginAPIKey renders the API key entry screen.
-func (m Model) viewLoginAPIKey() string {
-	providerName := m.loginProvider
-	if providerName == "" {
-		providerName = "provider"
-	}
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		pickerHeaderStyle.Render(fmt.Sprintf("Login — %s API Key", strings.Title(providerName))), //nolint:staticcheck
-		"",
-		"  "+statusStyle.Render("Paste your API key below (input is masked):"),
-		"  "+m.loginKeyInput.View(),
-		"",
-		"  "+statusStyle.Render("Enter to confirm  •  Esc to cancel"),
-	)
-	box := helpBoxStyle.Width(min(70, m.width-4)).Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// viewLoginOAuth renders the OAuth waiting screen.
-func (m Model) viewLoginOAuth() string {
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		pickerHeaderStyle.Render("Login — Anthropic OAuth"),
-		"",
-		"  "+m.spinner.View()+" "+statusStyle.Render("Waiting for browser login…"),
-		"",
-		"  "+statusStyle.Render("Complete the login in your browser, then return here."),
-		"  "+statusStyle.Render("Ctrl+C to quit."),
-	)
-	box := helpBoxStyle.Width(min(70, m.width-4)).Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// --- Helpers ----------------------------------------------------------------
-
-// waitForStream returns a tea.Cmd that reads the next event from the stream channel.
-func waitForStream(ch <-chan runtime.TurnEvent) tea.Cmd {
-	return func() tea.Msg {
-		for {
-			ev, ok := <-ch
-			if !ok {
-				return streamDoneMsg{}
-			}
-			switch ev.Type {
-			case runtime.TurnEventTextDelta:
-				return streamDeltaMsg{text: ev.Text}
-			case runtime.TurnEventToolStart:
-				return streamToolMsg{name: ev.ToolName, input: ev.ToolInput}
-			case runtime.TurnEventToolDone:
-				return streamToolDoneMsg{name: ev.ToolName, result: ev.ToolResult}
-			case runtime.TurnEventUsage:
-				return streamUsageMsg{inputTokens: ev.InputTokens, outputTokens: ev.OutputTokens}
-			case runtime.TurnEventDone:
-				return streamDoneMsg{}
-			case runtime.TurnEventError:
-				return streamErrMsg{err: ev.Err}
-			case runtime.TurnEventPermissionAsk:
-				return streamPermAskMsg{name: ev.ToolName, input: ev.ToolInput, reply: ev.PermReply}
-			case runtime.TurnEventAskUser:
-				return streamAskUserMsg{question: ev.ToolInput, reply: ev.AskUserReply}
-			}
-		}
-	}
-}
-
-// initViewport creates the viewport and sets textarea width on first resize.
-func (m Model) initViewport() Model {
+func (m *Model) initViewport() {
 	vpHeight := m.viewportHeight()
-	m.viewport = viewport.New(m.width, vpHeight)
+	m.viewport = tuicontrols.NewView(m.width, vpHeight)
 	m.viewport.SetContent(m.viewBuf)
-	m.viewport.GotoBottom()
-	m.textarea.SetWidth(max(m.width-2, 10))
-	return m
+	m.viewport.ScrollToBottom()
+	m.textarea.SetSize(m.width-2, textareaRows)
 }
 
-// resizeViewport updates dimensions after a window resize.
-func (m Model) resizeViewport() Model {
-	m.viewport.Width = m.width
-	m.viewport.Height = m.viewportHeight()
-	m.textarea.SetWidth(max(m.width-2, 10))
-	return m
+func (m *Model) resizeViewport() {
+	if m.viewport != nil {
+		m.viewport.SetSize(m.width, m.viewportHeight())
+	}
+	m.textarea.SetSize(m.width-2, textareaRows)
 }
 
-// viewportHeight calculates the viewport height from the terminal height.
-// Layout overhead: header(1) + divider(1) + textarea(textareaRows) + hint(1) + status(1).
-func (m Model) viewportHeight() int {
-	overhead := 4 + textareaRows // header + divider + textarea + hint + status
+func (m *Model) viewportHeight() int {
+	overhead := 4 + textareaRows
 	h := m.height - overhead
 	if h < 1 {
 		h = 1
@@ -1394,28 +1256,56 @@ func (m Model) viewportHeight() int {
 	return h
 }
 
-// refreshViewport rebuilds viewport content from current buffers.
-func (m Model) refreshViewport() Model {
+func (m *Model) refreshViewport() {
 	content := m.viewBuf + m.streamBuf
 	if m.state == stateBusy && !m.hasStreamContent {
-		content += m.spinner.View() + statusStyle.Render(" Thinking…\n")
+		spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		spin := spinChars[m.spinnerFrame%len(spinChars)]
+		content += spin + statusStyle.Wrap(" Thinking...\n")
 	}
-	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
-	return m
+	if m.viewport != nil {
+		m.viewport.SetContent(content)
+		m.viewport.ScrollToBottom()
+	}
 }
 
-// truncate shortens s to at most n runes, appending "…" if truncated.
+func (m *Model) centerBox(box string) string {
+	lines := strings.Split(box, "\n")
+	boxWidth := 0
+	for _, line := range lines {
+		w := termformat.TextWidthWithANSICodes(line)
+		if w > boxWidth {
+			boxWidth = w
+		}
+	}
+	leftPad := (m.width - boxWidth) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	topPad := (m.height - len(lines)) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	var result []string
+	for i := 0; i < topPad; i++ {
+		result = append(result, "")
+	}
+	padStr := strings.Repeat(" ", leftPad)
+	for _, line := range lines {
+		result = append(result, padStr+line)
+	}
+	return strings.Join(result, "\n")
+}
+
 func truncate(s string, n int) string {
 	runes := []rune(s)
 	if len(runes) <= n {
 		return s
 	}
-	return string(runes[:n]) + "…"
+	return string(runes[:n]) + "..."
 }
 
-// formatNum formats an integer with comma separators.
-// formatSessionList renders a table-style listing of session metadata.
 func formatSessionList(metas []runtime.SessionMeta) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%-40s  %-19s  %6s  %8s  %8s\n",
@@ -1433,6 +1323,16 @@ func formatSessionList(metas []runtime.SessionMeta) string {
 			formatNum(m.TotalOutputTokens)))
 	}
 	return sb.String()
+}
+
+func maskString(s string) string {
+	if s == "" {
+		return "(not set)"
+	}
+	if len(s) <= 4 {
+		return "****"
+	}
+	return "****" + s[len(s)-4:]
 }
 
 func formatNum(n int) string {

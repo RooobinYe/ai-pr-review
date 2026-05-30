@@ -1,89 +1,102 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "ai-pr-review/internal/q/termformat"
 
 // All TUI styles are derived from currentTheme.
 // Call rebuildStyles (via SetTheme) to refresh after a theme switch.
 var (
-	headerStyle          lipgloss.Style
-	modelTagStyle        lipgloss.Style
-	userLabelStyle       lipgloss.Style
-	assistantLabelStyle  lipgloss.Style
-	toolRunningStyle     lipgloss.Style
-	toolDoneStyle        lipgloss.Style
-	toolFailedStyle      lipgloss.Style
-	statusStyle          lipgloss.Style
-	warnStyle            lipgloss.Style
-	errorStyle           lipgloss.Style
-	helpBoxStyle         lipgloss.Style
-	dividerStyle         lipgloss.Style
-	inputPromptStyle     lipgloss.Style
-	pickerHeaderStyle    lipgloss.Style
-	selectedModelStyle   lipgloss.Style
-	unselectedModelStyle lipgloss.Style
+	headerStyle          termformat.Style
+	modelTagStyle        termformat.Style
+	userLabelStyle       termformat.Style
+	assistantLabelStyle  termformat.Style
+	toolRunningStyle     termformat.Style
+	toolDoneStyle        termformat.Style
+	toolFailedStyle      termformat.Style
+	statusStyle          termformat.Style
+	warnStyle            termformat.Style
+	errorStyle           termformat.Style
+	helpBoxStyle         termformat.BlockStyle
+	dividerStyle         termformat.Style
+	inputPromptStyle     termformat.Style
+	pickerHeaderStyle    termformat.Style
+	selectedModelStyle   termformat.Style
+	unselectedModelStyle termformat.Style
 )
 
-// init seeds styles from the default theme before the first render.
 func init() { rebuildStyles(currentTheme) }
 
-// rebuildStyles recreates all styles from the given theme tokens.
 func rebuildStyles(t Theme) {
-	headerStyle = lipgloss.NewStyle().
-		Foreground(t.Primary).
-		Bold(true)
+	headerStyle = termformat.Style{
+		Foreground: t.Primary,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	modelTagStyle = lipgloss.NewStyle().
-		Foreground(t.Muted)
+	modelTagStyle = termformat.Style{
+		Foreground: t.Muted,
+	}
 
-	userLabelStyle = lipgloss.NewStyle().
-		Foreground(t.UserLabel).
-		Bold(true)
+	userLabelStyle = termformat.Style{
+		Foreground: t.UserLabel,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	assistantLabelStyle = lipgloss.NewStyle().
-		Foreground(t.AssistantLabel).
-		Bold(true)
+	assistantLabelStyle = termformat.Style{
+		Foreground: t.AssistantLabel,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	toolRunningStyle = lipgloss.NewStyle().
-		Foreground(t.ToolRunning).
-		Italic(true)
+	toolRunningStyle = termformat.Style{
+		Foreground: t.ToolRunning,
+		Italic:     termformat.StyleSetOn,
+	}
 
-	toolDoneStyle = lipgloss.NewStyle().
-		Foreground(t.ToolDone)
+	toolDoneStyle = termformat.Style{
+		Foreground: t.ToolDone,
+	}
 
-	toolFailedStyle = lipgloss.NewStyle().
-		Foreground(t.ToolFailed).
-		Bold(true)
+	toolFailedStyle = termformat.Style{
+		Foreground: t.ToolFailed,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	statusStyle = lipgloss.NewStyle().
-		Foreground(t.Muted)
+	statusStyle = termformat.Style{
+		Foreground: t.Muted,
+	}
 
-	warnStyle = lipgloss.NewStyle().
-		Foreground(t.Warning)
+	warnStyle = termformat.Style{
+		Foreground: t.Warning,
+	}
 
-	errorStyle = lipgloss.NewStyle().
-		Foreground(t.Error)
+	errorStyle = termformat.Style{
+		Foreground: t.Error,
+	}
 
-	helpBoxStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Secondary).
-		Padding(1, 2)
+	helpBoxStyle = termformat.BlockStyle{
+		BorderStyle:      termformat.BorderStyleBasic,
+		BorderForeground: t.Secondary,
+		Padding:         1,
+	}
 
-	dividerStyle = lipgloss.NewStyle().
-		Foreground(t.Subtle)
+	dividerStyle = termformat.Style{
+		Foreground: t.Subtle,
+	}
 
-	inputPromptStyle = lipgloss.NewStyle().
-		Foreground(t.InputPrompt).
-		Bold(true)
+	inputPromptStyle = termformat.Style{
+		Foreground: t.InputPrompt,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	pickerHeaderStyle = lipgloss.NewStyle().
-		Foreground(t.Primary).
-		Bold(true).
-		Padding(0, 1)
+	pickerHeaderStyle = termformat.Style{
+		Foreground: t.Primary,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	selectedModelStyle = lipgloss.NewStyle().
-		Foreground(t.SelectedItem).
-		Bold(true)
+	selectedModelStyle = termformat.Style{
+		Foreground: t.SelectedItem,
+		Bold:       termformat.StyleSetOn,
+	}
 
-	unselectedModelStyle = lipgloss.NewStyle().
-		Foreground(t.UnselectedItem)
+	unselectedModelStyle = termformat.Style{
+		Foreground: t.UnselectedItem,
+	}
 }

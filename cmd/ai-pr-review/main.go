@@ -14,7 +14,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	qtui "ai-pr-review/internal/q/tui"
 )
 
 func main() {
@@ -188,9 +188,10 @@ func runTUI(cfg *runtime.Config, loop *runtime.ConversationLoop) {
 	}()
 
 	model := tui.NewModel(cfg, loop)
-	p := tea.NewProgram(model, tea.WithAltScreen())
-
-	if _, err := p.Run(); err != nil {
+	if err := qtui.RunTUI(model, qtui.Options{
+		Framerate:   60,
+		EnableMouse: true,
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}

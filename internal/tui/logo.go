@@ -4,18 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"ai-pr-review/internal/q/termformat"
 )
 
-// mascotLines is the ASCII/block-art representation of the ai-pr-review mascot.
-// Faithfully mirrors the pixel-art logo in assets/ai-pr-review.png:
-//
-//	• Two small square ears at the top corners
-//	• Wide, squat body (wider than tall)
-//	• Two tall narrow dark rectangular eyes, symmetrically placed
-//	• Central muzzle (lighter area) with a small nose, whisker dots,
-//	  and two prominent buck teeth
-//	• Four short stubby feet at the bottom
 var mascotLines = []string{
 	`  ▄▄▄                       ▄▄▄  `,
 	` ▐█ █▌                     ▐█ █▌ `,
@@ -32,25 +23,22 @@ var mascotLines = []string{
 	`   ▀▀▀  ▀▀▀▀    ▀▀▀▀  ▀▀▀      `,
 }
 
-// RenderLogo returns a styled splash block: ASCII mascot + app name + tagline.
-// Injected into the viewport on startup; scrolls away naturally as the
-// conversation grows.
 func RenderLogo(version string) string {
-	bodyColor := lipgloss.Color("33")  // cornflower blue — matches logo body
-	dimColor  := lipgloss.Color("240") // muted grey for subtitle
-	divColor  := lipgloss.Color("238") // very subtle divider
+	bodyColor := termformat.ANSI256Color(33)
+	dimColor := termformat.ANSI256Color(240)
+	divColor := termformat.ANSI256Color(238)
 
-	catStyle  := lipgloss.NewStyle().Foreground(bodyColor)
-	nameStyle := lipgloss.NewStyle().Foreground(bodyColor).Bold(true)
-	verStyle  := lipgloss.NewStyle().Foreground(dimColor)
-	tagStyle  := lipgloss.NewStyle().Foreground(dimColor).Italic(true)
-	divStyle  := lipgloss.NewStyle().Foreground(divColor)
+	catStyle := termformat.Style{Foreground: bodyColor}
+	nameStyle := termformat.Style{Foreground: bodyColor, Bold: termformat.StyleSetOn}
+	verStyle := termformat.Style{Foreground: dimColor}
+	tagStyle := termformat.Style{Foreground: dimColor, Italic: termformat.StyleSetOn}
+	divStyle := termformat.Style{Foreground: divColor}
 
-	cat  := catStyle.Render(strings.Join(mascotLines, "\n"))
-	name := nameStyle.Render("ai-pr-review")
-	ver  := verStyle.Render(" v" + version)
-	tag  := tagStyle.Render("AI PR Review 助手")
-	div  := divStyle.Render(strings.Repeat("─", 24))
+	cat := catStyle.Wrap(strings.Join(mascotLines, "\n"))
+	name := nameStyle.Wrap("ai-pr-review")
+	ver := verStyle.Wrap(" v" + version)
+	tag := tagStyle.Wrap("AI PR Review 助手")
+	div := divStyle.Wrap(strings.Repeat("─", 24))
 
 	return fmt.Sprintf("%s\n\n  %s%s\n  %s\n  %s\n\n", cat, name, ver, tag, div)
 }
