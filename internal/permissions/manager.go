@@ -50,7 +50,7 @@ func (m *Manager) Check(tool, input string) Decision {
 
 	// Auto-allow local read-only tools in all non-plan modes.
 	switch tool {
-	case "read_file", "glob", "grep":
+	case "read_file", "glob", "grep", "web_search", "web_fetch":
 		return DecisionAllow
 	}
 

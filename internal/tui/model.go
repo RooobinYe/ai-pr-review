@@ -141,6 +141,7 @@ type Model struct {
 	outputTokens int
 
 	hasStreamContent bool
+	initialPrompt    string // auto-send on first resize when non-empty
 
 	streamChan chan runtime.TurnEvent
 
@@ -165,17 +166,23 @@ type Model struct {
 	tui  *tui.TUI
 }
 
-func NewModel(cfg *runtime.Config, loop *runtime.ConversationLoop) *Model {
+func NewModel(cfg *runtime.Config, loop *runtime.ConversationLoop, initialPrompt ...string) *Model {
 	ta := tuicontrols.NewTextArea(80, textareaRows)
 	ta.Placeholder = "Type a message or /help..."
 
+	prompt := ""
+	if len(initialPrompt) > 0 {
+		prompt = initialPrompt[0]
+	}
+
 	return &Model{
-		state:    stateInput,
-		textarea: ta,
-		history:  newInputHistory(),
-		loop:     loop,
-		cfg:      cfg,
-		viewBuf:  RenderLogo(appVersion),
+		state:         stateInput,
+		textarea:      ta,
+		history:       newInputHistory(),
+		loop:          loop,
+		cfg:           cfg,
+		viewBuf:       RenderLogo(appVersion),
+		initialPrompt: prompt,
 	}
 }
 
@@ -194,6 +201,13 @@ func (m *Model) Update(t *tui.TUI, msg tui.Message) {
 		if !m.ready {
 			m.ready = true
 			m.initViewport()
+
+				// Auto-send initial PR prompt when --pr flag is used.
+				if m.initialPrompt != "" {
+					prompt := m.initialPrompt
+					m.initialPrompt = "" // clear to avoid re-send
+					m.startMessage(prompt)
+				}
 		} else {
 			m.resizeViewport()
 		}
