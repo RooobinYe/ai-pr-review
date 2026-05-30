@@ -16,6 +16,8 @@ var (
 	warnStyle            termformat.Style
 	errorStyle           termformat.Style
 	helpBoxStyle         termformat.BlockStyle
+	slashHintBoxStyle    termformat.BlockStyle
+	slashCmdStyle        termformat.Style
 	dividerStyle         termformat.Style
 	inputPromptStyle     termformat.Style
 	pickerHeaderStyle    termformat.Style
@@ -75,6 +77,17 @@ func rebuildStyles(t Theme) {
 		BorderStyle:      termformat.BorderStyleBasic,
 		BorderForeground: t.Secondary,
 		Padding:         1,
+	}
+
+	slashHintBoxStyle = termformat.BlockStyle{
+		BorderStyle:      termformat.BorderStyleBasic,
+		BorderForeground: t.Primary,
+		Padding:         0,
+	}
+
+	slashCmdStyle = termformat.Style{
+		Foreground: t.Primary,
+		Bold:       termformat.StyleSetOn,
 	}
 
 	dividerStyle = termformat.Style{

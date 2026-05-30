@@ -48,10 +48,15 @@ func (m *Manager) Check(tool, input string) Decision {
 		return d
 	}
 
-	// AcceptEdits: auto-allow read-only and edit tools, ask for bash
+	// Auto-allow local read-only tools in all non-plan modes.
+	switch tool {
+	case "read_file", "glob", "grep":
+		return DecisionAllow
+	}
+
+	// AcceptEdits: additionally auto-allow edit tools.
 	if m.Mode == ModeAcceptEdits {
-		switch tool {
-		case "read_file", "glob", "grep", "write_file":
+		if tool == "write_file" {
 			return DecisionAllow
 		}
 	}
