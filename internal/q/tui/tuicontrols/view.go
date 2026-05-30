@@ -5,6 +5,7 @@ import (
 
 	"ai-pr-review/internal/q/termformat"
 	"ai-pr-review/internal/q/tui"
+	"ai-pr-review/internal/q/uni"
 )
 
 // View is a scrollable, fixed-size view over a newline-delimited string.
@@ -28,7 +29,7 @@ func NewView(width, height int) *View {
 		width:  max0(width),
 		height: max0(height),
 	}
-	v.lines = splitLines(v.content)
+	v.lines = splitLinesToWidth(v.content, v.width)
 
 	km := NewKeyMap()
 	km.Add(tui.KeyEvent{ControlKey: tui.ControlKeyPageUp}, "pageup")
@@ -75,7 +76,7 @@ func (v *View) View() string {
 		return ""
 	}
 	if v.lines == nil {
-		v.lines = splitLines(v.content)
+		v.lines = splitLinesToWidth(v.content, v.width)
 	}
 
 	rows := make([]string, 0, v.height)
@@ -89,7 +90,7 @@ func (v *View) View() string {
 			rows = append(rows, v.renderEmptyRow())
 			continue
 		}
-		rows = append(rows, clipLine(v.lines[lineIdx], v.width))
+		rows = append(rows, v.lines[lineIdx])
 	}
 	return strings.Join(rows, "\n")
 }
@@ -99,8 +100,13 @@ func (v *View) SetSize(w, h int) {
 	if v == nil {
 		return
 	}
+	oldWidth := v.width
 	v.width = max0(w)
 	v.height = max0(h)
+	if v.width != oldWidth {
+		v.lines = splitLinesToWidth(v.content, v.width)
+		v.clampOffset()
+	}
 }
 
 // Width returns the width.
@@ -264,7 +270,7 @@ func (v *View) SetContent(s string) {
 		return
 	}
 	v.content = s
-	v.lines = splitLines(s)
+	v.lines = splitLinesToWidth(s, v.width)
 	v.clampOffset()
 }
 
@@ -273,7 +279,7 @@ func (v *View) clampOffset() {
 		return
 	}
 	if v.lines == nil {
-		v.lines = splitLines(v.content)
+		v.lines = splitLinesToWidth(v.content, v.width)
 	}
 	if v.offset < 0 {
 		v.offset = 0
@@ -334,22 +340,151 @@ func (v *View) renderEmptyRow() string {
 	return bg + strings.Repeat(" ", v.width) + termformat.ANSIReset
 }
 
-func splitLines(s string) []string {
+func splitLinesToWidth(s string, width int) []string {
 	if s == "" {
 		return []string{""}
 	}
-	return strings.Split(s, "\n")
+	if width <= 0 {
+		return strings.Split(s, "\n")
+	}
+	logicalLines := strings.Split(s, "\n")
+	var out []string
+	for _, line := range logicalLines {
+		wrapped := wrapLineToDisplayWidth(line, width)
+		out = append(out, wrapped...)
+	}
+	return out
 }
 
-func clipLine(line string, width int) string {
-	if line == "" || width <= 0 {
+// wrapLineToDisplayWidth wraps a single logical line (no newlines) into display lines fitting within width cells.
+// ANSI SGR styling is carried forward across wrapped segments.
+func wrapLineToDisplayWidth(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	if width <= 0 {
+		return []string{line}
+	}
+
+	var out []string
+	var builder strings.Builder
+	currentWidth := 0
+	activeSGR := ""
+
+	flush := func() {
+		s := builder.String()
+		if activeSGR != "" && !strings.HasSuffix(s, termformat.ANSIReset) {
+			s += termformat.ANSIReset
+		}
+		out = append(out, s)
+		builder.Reset()
+		if activeSGR != "" {
+			builder.WriteString(activeSGR)
+		}
+		currentWidth = 0
+	}
+
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			seqLen := ansiSequenceLengthForView(line[i:])
+			if seqLen == 0 {
+				seqLen = 1
+			}
+			seq := line[i : i+seqLen]
+			builder.WriteString(seq)
+			activeSGR = trackActiveSGR(activeSGR, seq)
+			i += seqLen
+			continue
+		}
+
+		nextEsc := strings.IndexByte(line[i:], '\x1b')
+		segmentEnd := len(line)
+		if nextEsc >= 0 {
+			segmentEnd = i + nextEsc
+		}
+		segment := line[i:segmentEnd]
+		i = segmentEnd
+
+		iter := uni.NewGraphemeIterator(segment, nil)
+		for iter.Next() {
+			grapheme := segment[iter.Start():iter.End()]
+			gw := iter.TextWidth()
+
+			if currentWidth+gw > width && builder.Len() > 0 {
+				flush()
+			}
+
+			builder.WriteString(grapheme)
+			currentWidth += gw
+		}
+	}
+
+	if builder.Len() > 0 {
+		s := builder.String()
+		if activeSGR != "" && !strings.HasSuffix(s, termformat.ANSIReset) {
+			s += termformat.ANSIReset
+		}
+		out = append(out, s)
+	} else if len(out) == 0 {
+		out = []string{""}
+	}
+
+	return out
+}
+
+func ansiSequenceLengthForView(s string) int {
+	if len(s) == 0 || s[0] != '\x1b' {
+		return 0
+	}
+	if len(s) == 1 {
+		return 1
+	}
+	switch s[1] {
+	case '[':
+		for i := 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i + 1
+			}
+		}
+		return 0
+	case ']':
+		for i := 2; i < len(s); i++ {
+			if s[i] == '\a' {
+				return i + 1
+			}
+			if s[i] == '\\' && s[i-1] == '\x1b' {
+				return i + 1
+			}
+		}
+		return 0
+	case 'P', '^', '_':
+		for i := 2; i < len(s); i++ {
+			if s[i] == '\\' && s[i-1] == '\x1b' {
+				return i + 1
+			}
+		}
+		return 0
+	default:
+		return 2
+	}
+}
+
+// trackActiveSGR returns the cumulative active SGR sequence after applying seq.
+func trackActiveSGR(current, seq string) string {
+	if !strings.HasPrefix(seq, "\x1b[") || !strings.HasSuffix(seq, "m") {
+		return current
+	}
+	params := seq[2 : len(seq)-1]
+	if params == "0" || params == "" {
 		return ""
 	}
-	w := termformat.TextWidthWithANSICodes(line)
-	if w <= width {
-		return line
+	// For simplicity, rebuild the active SGR by appending params.
+	// A full SGR state machine would be more accurate but this handles
+	// the common case of color/style sequences in streamed text.
+	if current == "" {
+		return seq
 	}
-	return termformat.Cut(line, 0, w-width)
+	return current[:len(current)-1] + ";" + params + "m"
 }
 
 func max0(n int) int {

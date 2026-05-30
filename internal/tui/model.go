@@ -58,6 +58,28 @@ var anthropicAuthMethods = []loginMethodEntry{
 	{"api_key", "API Key", "Enter your Anthropic API key manually"},
 }
 
+type slashCommand struct {
+	cmd  string
+	desc string
+}
+
+var slashCommands = []slashCommand{
+	{"/model", "Change the active model"},
+	{"/help", "Show help and key bindings"},
+	{"/login", "Login to AI provider"},
+	{"/clear", "Clear conversation history"},
+	{"/status", "Show session status"},
+	{"/config", "Show or set configuration"},
+	{"/session", "List, save, or load sessions"},
+	{"/session-list", "List saved sessions"},
+	{"/init", "Create project config file"},
+	{"/cost", "Show token usage and cost"},
+	{"/theme", "Switch dark/light theme"},
+	{"/auth", "Auth login, logout, status"},
+	{"/exit", "Exit the application"},
+	{"/quit", "Exit the application"},
+}
+
 type appState int
 
 const (
@@ -136,6 +158,8 @@ type Model struct {
 
 	spinnerFrame int
 
+	slashHints string
+
 	loop *runtime.ConversationLoop
 	cfg  *runtime.Config
 	tui  *tui.TUI
@@ -176,6 +200,16 @@ func (m *Model) Update(t *tui.TUI, msg tui.Message) {
 
 	case tui.KeyEvent:
 		m.handleKey(msg)
+
+	case tui.MouseEvent:
+		if msg.IsWheel() && m.viewport != nil {
+			switch msg.Button {
+			case tui.MouseButtonWheelUp:
+				m.viewport.ScrollUp(3)
+			case tui.MouseButtonWheelDown:
+				m.viewport.ScrollDown(3)
+			}
+		}
 
 	case streamDeltaMsg:
 		if !m.hasStreamContent {
@@ -277,13 +311,18 @@ func (m *Model) View() string {
 
 	header := m.renderHeader()
 	divider := dividerStyle.Wrap(strings.Repeat("─", m.width))
-	hint := statusStyle.Wrap("Enter=send  Ctrl+J=newline  ↑↓=history  PgUp/PgDn=scroll")
+	hint := statusStyle.Wrap("Enter=send  Ctrl+J=newline  ↑↓=history  Tab=autocomplete")
 	statusLine := m.renderStatusBar()
 	inputArea := m.renderInputArea()
 
+	vpOutput := m.viewport.View()
+	if m.slashHints != "" {
+		vpOutput = m.overlaySlashHints(vpOutput)
+	}
+
 	return strings.Join([]string{
 		header,
-		m.viewport.View(),
+		vpOutput,
 		divider,
 		inputArea,
 		hint,
@@ -340,6 +379,7 @@ func (m *Model) handleKey(msg tui.KeyEvent) {
 		if !strings.Contains(m.textarea.Contents(), "\n") {
 			prev := m.history.Prev(m.textarea.Contents())
 			m.textarea.SetContents(prev)
+			m.updateSlashHints()
 			return
 		}
 		m.textarea.Update(m.tui, msg)
@@ -348,17 +388,28 @@ func (m *Model) handleKey(msg tui.KeyEvent) {
 		if !strings.Contains(m.textarea.Contents(), "\n") {
 			next := m.history.Next()
 			m.textarea.SetContents(next)
+			m.updateSlashHints()
 			return
 		}
 		m.textarea.Update(m.tui, msg)
 
-	case tui.ControlKeyPgUp, tui.ControlKeyPgDown:
-		m.viewport.Update(m.tui, msg)
+	case tui.ControlKeyTab:
+		text := strings.TrimSpace(m.textarea.Contents())
+		if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+			m.history.Reset()
+			m.autocompleteSlash(text)
+			m.updateSlashHints()
+			return
+		}
+		m.history.Reset()
+		m.textarea.Update(m.tui, msg)
 
 	default:
 		m.history.Reset()
 		m.textarea.Update(m.tui, msg)
 	}
+
+	m.updateSlashHints()
 }
 
 func (m *Model) handleSubmit() {
@@ -369,6 +420,7 @@ func (m *Model) handleSubmit() {
 	m.textarea.SetContents("")
 	m.history.Push(text)
 	m.history.Reset()
+	m.slashHints = ""
 
 	if strings.HasPrefix(text, "/") {
 		m.handleSlashCommand(text)
@@ -1112,7 +1164,8 @@ func (m *Model) viewHelp() string {
 		"  " + userLabelStyle.Wrap("Enter") + "          Send message",
 		"  " + userLabelStyle.Wrap("Ctrl+J") + "         Insert newline (multi-line input)",
 		"  " + userLabelStyle.Wrap("↑ / ↓") + "          Navigate input history (single-line mode)",
-		"  " + userLabelStyle.Wrap("PgUp / PgDn") + "    Scroll conversation",
+		"  " + userLabelStyle.Wrap("Tab") + "            Autocomplete slash commands",
+		"  " + userLabelStyle.Wrap("Scroll") + "          Scroll conversation (mouse/trackpad)",
 		"  " + userLabelStyle.Wrap("Ctrl+C") + "         Exit",
 		"",
 		statusStyle.Wrap("Esc / Enter / q to close this panel"),
@@ -1264,9 +1317,143 @@ func (m *Model) refreshViewport() {
 		content += spin + statusStyle.Wrap(" Thinking...\n")
 	}
 	if m.viewport != nil {
+		atBottom := m.viewport.AtBottom()
 		m.viewport.SetContent(content)
-		m.viewport.ScrollToBottom()
+		if atBottom {
+			m.viewport.ScrollToBottom()
+		}
 	}
+}
+
+// updateSlashHints checks whether the current textarea content starts with "/" and
+// updates the slash command hint overlay. Hints are capped so they never overflow
+// the viewport area.
+func (m *Model) updateSlashHints() {
+	text := strings.TrimSpace(m.textarea.Contents())
+	if m.width == 0 || !strings.HasPrefix(text, "/") || strings.Contains(text, " ") {
+		m.slashHints = ""
+		return
+	}
+
+	var matching []slashCommand
+	for _, sc := range slashCommands {
+		if strings.HasPrefix(sc.cmd, text) {
+			matching = append(matching, sc)
+		}
+	}
+
+	if len(matching) == 0 {
+		m.slashHints = ""
+		return
+	}
+
+	// Cap visible items like Claude Code (OVERLAY_MAX_ITEMS = 5).
+	const maxListItems = 5
+	if text != "/" && len(matching) > maxListItems {
+		matching = matching[:maxListItems]
+	}
+
+	var content string
+	if text == "/" {
+		content = m.renderSlashGrid(matching)
+	} else {
+		content = m.renderSlashList(matching)
+	}
+
+	m.slashHints = slashHintBoxStyle.Apply(content)
+}
+
+// renderSlashGrid renders slash commands in a compact multi-column grid.
+func (m *Model) renderSlashGrid(cmds []slashCommand) string {
+	cmdWidth := 16
+	available := m.width - 4 // subtract border chars
+	if available < cmdWidth {
+		available = cmdWidth
+	}
+	cols := available / cmdWidth
+	if cols < 1 {
+		cols = 1
+	}
+	if cols > 5 {
+		cols = 5
+	}
+
+	var lines []string
+	var current string
+	for i, sc := range cmds {
+		cell := " " + slashCmdStyle.Wrap(sc.cmd)
+		pad := cmdWidth - len(sc.cmd) - 1
+		if pad < 1 {
+			pad = 1
+		}
+		current += cell + strings.Repeat(" ", pad)
+		if (i+1)%cols == 0 || i == len(cmds)-1 {
+			lines = append(lines, current)
+			current = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// overlaySlashHints overlays the slash command hints onto the bottom of the
+// viewport output, so the hints float over the transcript area without affecting
+// layout height (like Claude Code's position=absolute overlay).
+func (m *Model) overlaySlashHints(vpOutput string) string {
+	vpLines := strings.Split(vpOutput, "\n")
+	hintLines := strings.Split(m.slashHints, "\n")
+
+	start := len(vpLines) - len(hintLines)
+	if start < 0 {
+		start = 0
+	}
+	copy(vpLines[start:], hintLines)
+	return strings.Join(vpLines, "\n")
+}
+
+// renderSlashList renders matching slash commands vertically with descriptions.
+func (m *Model) renderSlashList(cmds []slashCommand) string {
+	var b strings.Builder
+	for i, sc := range cmds {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(" " + slashCmdStyle.Wrap(sc.cmd))
+		b.WriteString("  " + statusStyle.Wrap(sc.desc))
+	}
+	return b.String()
+}
+
+// autocompleteSlash autocompletes the partial command to the longest common prefix
+func (m *Model) autocompleteSlash(partial string) {
+	var matching []string
+	for _, sc := range slashCommands {
+		if strings.HasPrefix(sc.cmd, partial) {
+			matching = append(matching, sc.cmd)
+		}
+	}
+	if len(matching) == 0 {
+		return
+	}
+
+	common := matching[0]
+	for _, cmd := range matching[1:] {
+		common = commonPrefix(common, cmd)
+	}
+	if len(common) > len(partial) {
+		m.textarea.SetContents(common)
+	}
+}
+
+func commonPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return a[:i]
 }
 
 func (m *Model) centerBox(box string) string {
