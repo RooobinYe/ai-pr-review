@@ -154,10 +154,12 @@ type Risk struct {
 	Line        int             `json:"line"` // 0 means file-level
 	Severity    RiskSeverity    `json:"severity"`
 	Confidence  ConfidenceLevel `json:"confidence"`
-	Category    string          `json:"category"` // security, nil-pointer, error-handling, performance, etc.
+	Category    string          `json:"category"`          // security, nil-pointer, error-handling, performance, etc.
 	Title       string          `json:"title"`
+	Evidence    string          `json:"evidence,omitempty"`    // specific code snippet or diff excerpt
 	Description string          `json:"description"`
 	Suggestion  string          `json:"suggestion"`
+	Uncertainty string          `json:"uncertainty,omitempty"` // explains low/medium confidence when applicable
 }
 
 // FileSummary summarises the changes in a single file.

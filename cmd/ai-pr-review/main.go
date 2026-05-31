@@ -7,6 +7,7 @@ import (
 	"ai-pr-review/internal/compat"
 	"ai-pr-review/internal/permissions"
 	"ai-pr-review/internal/pr"
+	"ai-pr-review/internal/prompt"
 	"ai-pr-review/internal/review"
 	"ai-pr-review/internal/runtime"
 	"ai-pr-review/internal/tui"
@@ -246,6 +247,12 @@ func main() {
 
 	loop := runtime.NewConversationLoop(cfg, realClient)
 
+	// When in PR review mode, inject the review-specific system prompt
+	// that adds anti-hallucination rules, failure modes, and review criteria.
+	if prInitialPrompt != "" {
+		loop.SystemPromptOverride = prompt.AgenticReviewSystemPrompt()
+	}
+
 	// Wire up the permission manager (Phase 11).
 	// CLI --permission-mode flag overrides the config-file value when set to a
 	// non-default value. cfg.PermissionMode comes from the layered settings files.
@@ -319,77 +326,10 @@ func main() {
 // extraArgs contains optional user instructions appended after the PR context
 // (e.g. "使用中文回答", "focus on security issues").
 func buildPRPrompt(data *pr.PRData, extraArgs string) string {
-	_, err := pr.ParsePRData(data)
-	if err != nil {
-		// Fallback: simple prompt without parsed diffs.
-		return fmt.Sprintf(
-			`Please review this GitHub pull request:
-
-Title: %s
-Author: %s
-Branch: %s → %s
-Files changed: %d
-
-Provide a thorough code review covering:
-1. Summary of what this PR changes
-2. Potential risks (security, nil pointers, error handling, performance, concurrency)
-3. Specific, actionable suggestions for improvement
-
-Focus on the most important issues first.`,
-			data.Details.Title,
-			data.Details.Author,
-			data.Details.HeadBranch,
-			data.Details.BaseBranch,
-			len(data.Files),
-		)
-	}
-
-	var b strings.Builder
-	b.WriteString("You are reviewing a GitHub pull request. ")
-	b.WriteString("The repository has been cloned to your current working directory. ")
-	b.WriteString("You can explore the full codebase using read_file, grep, glob, and bash tools.\n\n")
-	b.WriteString(fmt.Sprintf("**PR Title:** %s\n", data.Details.Title))
-	b.WriteString(fmt.Sprintf("**Author:** %s\n", data.Details.Author))
-	b.WriteString(fmt.Sprintf("**Branch:** `%s` → `%s`\n", data.Details.HeadBranch, data.Details.BaseBranch))
-	if data.Details.Description != "" {
-		b.WriteString(fmt.Sprintf("**Description:** %s\n", data.Details.Description))
-	}
-	b.WriteString(fmt.Sprintf("\n**Files changed:** %d (+%d/-%d)\n\n", len(data.Files),
-		sumAdditions(data.Files), sumDeletions(data.Files)))
-
-	b.WriteString("### Changed Files\n\n")
-	for _, f := range data.Files {
-		cat := review.ClassifyFile(f.Filename)
-		tag := ""
-		switch f.Status {
-		case "added":
-			tag = "[new]"
-		case "modified":
-			tag = "[mod]"
-		case "removed":
-			tag = "[del]"
-		case "renamed":
-			tag = "[ren]"
-		}
-		b.WriteString(fmt.Sprintf("- %s `%s` [%s] +%d/-%d\n", tag, f.Filename, cat.String(), f.Additions, f.Deletions))
-	}
-
-	b.WriteString("\n---\n\n")
-	b.WriteString("Please review this PR by:\n")
-	b.WriteString("1. Using `git diff HEAD~1` or reading changed files directly with read_file to understand changes in full context\n")
-	b.WriteString("2. Using grep and glob to find related code (callers, implementations, interfaces, test files)\n")
-	b.WriteString("3. Using bash to run git log, git show, or other exploration commands\n\n")
-	b.WriteString("Then provide a thorough code review covering:\n")
-	b.WriteString("- **Summary**: What this PR changes and why\n")
-	b.WriteString("- **Risks**: Security, nil pointers, error handling, performance, concurrency, breaking changes\n")
-	b.WriteString("- **Suggestions**: Specific, actionable improvements with code examples where helpful\n")
-	b.WriteString("\nFocus on the most important issues first. Be precise — reference specific files and line numbers.\n")
-
-	if extraArgs != "" {
-		b.WriteString(fmt.Sprintf("\nAdditional instructions: %s\n", extraArgs))
-	}
-
-	return b.String()
+	// Use the centralised prompt builder from the prompt package.
+	// It provides XML-structured prompts with exploration checklists
+	// and anti-hallucination rules.
+	return prompt.AgenticUserPrompt(data, extraArgs)
 }
 
 func sumAdditions(files []pr.ChangedFile) int {
