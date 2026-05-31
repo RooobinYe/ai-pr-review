@@ -14,10 +14,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	qtui "ai-pr-review/internal/q/tui"
 )
@@ -28,7 +30,8 @@ import (
 //	go build -ldflags "\
 //	  -X 'main.DefaultAPIKey=sk-xxx' \
 //	  -X 'main.DefaultBaseURL=https://api.example.com' \
-//	  -X 'main.DefaultModel=claude-sonnet-4-20250514'" \
+//	  -X 'main.DefaultModel=claude-sonnet-4-20250514' \
+//	  -X 'main.Version=1.0.0'" \
 //	  ./cmd/ai-pr-review
 //
 // Each serves as the lowest-priority fallback so that env vars, CLI flags, and
@@ -38,6 +41,11 @@ var (
 	DefaultBaseURL string
 	DefaultModel   string
 )
+
+// Version is injected at build time via ldflags. It is embedded in the JSON
+// output so that consumers can identify which version of ai-pr-review produced
+// the review.
+var Version string
 
 func main() {
 	// Route diagnostic subcommands before flag parsing.
@@ -61,6 +69,9 @@ func main() {
 	promptFlag := flag.String("prompt", "", "Run a single prompt and exit")
 	prFlag := flag.String("pr", "", "GitHub PR URL to review (e.g. https://github.com/owner/repo/pull/123)")
 	formatFlag := flag.String("format", "", "Output format: markdown or json (requires --pr)")
+	quietFlag := flag.Bool("quiet", false, "Suppress all stderr diagnostic output (use in CI/CD)")
+	outputFlag := flag.String("output", "", "Write JSON result to file")
+	failOnFlag := flag.String("fail-on", "", "Exit non-zero if must_fix contains issues at this severity or above (critical|high|medium|low)")
 	modelFlag := flag.String("model", "", "Override the model to use")
 	apiKeyFlag := flag.String("api-key", "", "API key for the AI provider (overrides embedded default)")
 	baseURLFlag := flag.String("base-url", "", "Base URL for the AI provider API (overrides embedded default)")
@@ -109,75 +120,94 @@ func main() {
 	// used without --format.
 	var prInitialPrompt string
 
+	// When --format is active, route all diagnostic output to stderr so stdout
+	// stays clean for the final JSON/markdown output. In --quiet mode, suppress
+	// diagnostic stderr as well via errOut.
+	var errOut io.Writer = os.Stderr
+	if *quietFlag || os.Getenv("CI") != "" {
+		errOut = io.Discard
+	}
+
+	// When --format is active, use prOut for PR metadata (stderr when format mode,
+	// stdout otherwise). This keeps stdout clean for the final formatted output.
+	prOut := io.Writer(os.Stdout)
+	if *formatFlag != "" {
+		prOut = errOut // route PR progress to stderr (suppressible by --quiet)
+	}
+
 	// If --pr is specified, validate the URL, fetch PR data, and print summary.
 	var prInfo *pr.PRInfo
 	if *prFlag != "" {
 		info, err := pr.ParsePRURL(*prFlag)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: invalid PR URL %q: %v\n", *prFlag, err)
-			fmt.Fprintln(os.Stderr, "Expected format: https://github.com/owner/repo/pull/number")
+			fmt.Fprintf(errOut, "Error: invalid PR URL %q: %v\n", *prFlag, err)
+			fmt.Fprintln(errOut, "Expected format: https://github.com/owner/repo/pull/number")
 			os.Exit(1)
 		}
 		prInfo = info
 
 		token := os.Getenv("GITHUB_TOKEN")
 		if token == "" {
-			fmt.Fprintln(os.Stderr, "Warning: GITHUB_TOKEN environment variable is not set.")
-			fmt.Fprintln(os.Stderr, "         Public repos will work with strict rate limiting (60 req/hour).")
-			fmt.Fprintln(os.Stderr, "         For private repos or higher limits, set: export GITHUB_TOKEN=<your-github-token>")
+			fmt.Fprintln(errOut, "Warning: GITHUB_TOKEN environment variable is not set.")
+			fmt.Fprintln(errOut, "         Public repos will work with strict rate limiting (60 req/hour).")
+			fmt.Fprintln(errOut, "         For private repos or higher limits, set: export GITHUB_TOKEN=<your-github-token>")
 		}
 
-		fmt.Printf("PR Review: %s/%s #%d\n", prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
-		fmt.Println()
+		fmt.Fprintf(prOut, "PR Review: %s/%s #%d\n", prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
+		if *formatFlag == "" {
+			fmt.Println()
+		}
 
 		client := pr.NewGitHubClient(token)
 		ctx := context.Background()
 
-		fmt.Println("Fetching PR details...")
+		fmt.Fprintf(prOut, "Fetching PR details...\n")
 		prData, fetchErr := client.FetchPR(ctx, prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
 		if fetchErr != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to fetch PR data: %v\n", fetchErr)
+			fmt.Fprintf(errOut, "Error: failed to fetch PR data: %v\n", fetchErr)
 			os.Exit(1)
 		}
 
-		// Print PR summary.
-		fmt.Printf("  Title:   %s\n", prData.Details.Title)
-		fmt.Printf("  Author:  %s\n", prData.Details.Author)
-		fmt.Printf("  State:   %s\n", prData.Details.State)
-		fmt.Printf("  Branch:  %s ← %s\n", prData.Details.BaseBranch, prData.Details.HeadBranch)
-		fmt.Printf("  Commits: %s (base) ↔ %s (head)\n", shortSHA(prData.Details.BaseSHA), shortSHA(prData.Details.HeadSHA))
-		fmt.Printf("  URL:     %s\n", prData.Details.URL)
+		// Print PR summary to prOut (stderr in format mode, stdout otherwise).
+		fmt.Fprintf(prOut, "  Title:   %s\n", prData.Details.Title)
+		fmt.Fprintf(prOut, "  Author:  %s\n", prData.Details.Author)
+		fmt.Fprintf(prOut, "  State:   %s\n", prData.Details.State)
+		fmt.Fprintf(prOut, "  Branch:  %s ← %s\n", prData.Details.BaseBranch, prData.Details.HeadBranch)
+		fmt.Fprintf(prOut, "  Commits: %s (base) ↔ %s (head)\n", shortSHA(prData.Details.BaseSHA), shortSHA(prData.Details.HeadSHA))
+		fmt.Fprintf(prOut, "  URL:     %s\n", prData.Details.URL)
 
 		// Clone the PR's head repository so the AI can explore full file context
 		// using read_file, grep, glob, and bash tools.
-		cloneBaseDir, err := pr.DefaultCloneBaseDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		cloneBaseDir, cloneDirErr := pr.DefaultCloneBaseDir()
+		if cloneDirErr != nil {
+			fmt.Fprintf(errOut, "Warning: %v\n", cloneDirErr)
 		}
 		cloneMgr := pr.NewCloneManager(cloneBaseDir)
 		cloneDisplay := cloneBaseDir
 		if cloneDisplay == "" {
 			cloneDisplay = "~/.ai-pr-review/pr"
 		}
-		fmt.Printf("\nCloning repository into %s/%s-%s-%d/ ...\n",
+		fmt.Fprintf(prOut, "\nCloning repository into %s/%s-%s-%d/ ...\n",
 			cloneDisplay, prInfo.Owner, prInfo.Repo, prInfo.PullNumber)
 		repoPath, cloneErr := cloneMgr.ClonePRRepo(ctx,
 			prInfo.Owner, prInfo.Repo, prInfo.PullNumber,
 			prData.Details.HeadBranch, prData.Details.CloneURL, token)
 		if cloneErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not clone repository: %v\n", cloneErr)
-			fmt.Fprintln(os.Stderr, "         Review will proceed with diff-only context.")
+			fmt.Fprintf(errOut, "Warning: could not clone repository: %v\n", cloneErr)
+			fmt.Fprintln(errOut, "         Review will proceed with diff-only context.")
 		} else {
-			fmt.Printf("  Cloned to: %s\n", repoPath)
+			fmt.Fprintf(prOut, "  Cloned to: %s\n", repoPath)
 			if err := os.Chdir(repoPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not change to repo directory: %v\n", err)
+				fmt.Fprintf(errOut, "Warning: could not change to repo directory: %v\n", err)
 			}
 		}
-		fmt.Println()
+		if *formatFlag == "" {
+			fmt.Println()
+		}
 
 		// --format: run review pipeline and exit immediately.
 		if *formatFlag != "" {
-			runReviewPipeline(prData, *formatFlag, *modelFlag, *apiKeyFlag, *baseURLFlag, extraArgs)
+			runReviewPipeline(prData, *formatFlag, *modelFlag, *apiKeyFlag, *baseURLFlag, extraArgs, *quietFlag, *outputFlag, *failOnFlag)
 			return
 		}
 
@@ -370,17 +400,24 @@ func formatCatCounts(counts map[review.FileCategory]int) string {
 // review). For JSON format it uses a two-phase approach:
 //   - Phase 1: explore the repository with tools (same as markdown)
 //   - Phase 2: produce structured JSON with must_fix and points_of_interest
-func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURLFlag, extraArgs string) {
+func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURLFlag, extraArgs string, quiet bool, outputFile, failOn string) {
 	// Resolve the effective API key: CLI flag > ldflags embedded default.
 	effectiveKey := apiKeyFlag
 	if effectiveKey == "" {
 		effectiveKey = DefaultAPIKey
 	}
 
+	// Determine stderr writer. In --quiet mode or CI environments, suppress all
+	// diagnostic output so that stdout contains only the JSON result.
+	errOut := io.Writer(os.Stderr)
+	if quiet || os.Getenv("CI") != "" {
+		errOut = io.Discard
+	}
+
 	format = strings.ToLower(format)
 	if format != "markdown" && format != "json" {
-		fmt.Fprintf(os.Stderr, "Error: unsupported format %q. Use \"markdown\" or \"json\".\n", format)
-		os.Exit(1)
+		emitErrorJSON("USAGE_ERROR", fmt.Sprintf("unsupported format %q, use \"markdown\" or \"json\"", format), 4)
+		return
 	}
 
 	// Use the exact same config + credential resolution as the TUI path so that
@@ -415,19 +452,15 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 	}
 
 	if cfg.APIKey == "" && cfg.OAuthToken == "" {
-		fmt.Fprintln(os.Stderr, "Error: no credentials found.")
-		fmt.Fprintln(os.Stderr, "  Pass --api-key <key>")
-		fmt.Fprintln(os.Stderr, "  Set ANTHROPIC_API_KEY or OPENAI_API_KEY")
-		fmt.Fprintln(os.Stderr, "  Add \"apiKey\" to .ai-pr-review/settings.json")
-		fmt.Fprintln(os.Stderr, "  Or run the TUI and use /login to authenticate.")
-		os.Exit(1)
+		emitErrorJSON("NO_CREDENTIALS", "no credentials found — pass --api-key, set ANTHROPIC_API_KEY, or run /login", 1)
+		return
 	}
 
 	// Create the provider client through the same factory used by the TUI.
 	providerClient, clientErr := runtime.NewProviderClient(cfg)
 	if clientErr != nil {
-		fmt.Fprintf(os.Stderr, "Error: could not create %s client: %v\n", cfg.ProviderName, clientErr)
-		os.Exit(1)
+		emitErrorJSON("CLIENT_INIT_FAILED", fmt.Sprintf("could not create %s client: %v", cfg.ProviderName, clientErr), 2)
+		return
 	}
 
 	// Use ConversationLoop to give the AI access to tools (read_file, grep,
@@ -441,39 +474,75 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 	explorePrompt := buildPRPrompt(prData, extraArgs)
 
 	var output string
+	model := cfg.Model
+	var warnings []string
 
 	if format == "json" {
 		// ---- Two-phase JSON review ----
 
 		// Phase 1: explore the repository with tools.
-		fmt.Fprintln(os.Stderr, "Phase 1/2: Exploring repository context...")
+		fmt.Fprintf(errOut, "Phase 1/2: Exploring repository context...\n")
 		if _, err := runAgenticReview(loop, explorePrompt); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: exploration failed: %v\n", err)
-			os.Exit(1)
+			emitErrorJSON("AI_EXPLORATION_FAILED", fmt.Sprintf("exploration failed: %v", err), 2)
+			return
 		}
 
 		// Phase 2: ask the AI to produce structured JSON based on everything it learned.
-		fmt.Fprintln(os.Stderr, "Phase 2/2: Generating structured JSON review...")
+		fmt.Fprintf(errOut, "Phase 2/2: Generating structured JSON review...\n")
 		structuredPrompt := buildStructuredJSONPrompt()
 		rawResponse, err := runAgenticReview(loop, structuredPrompt)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: structured review failed: %v\n", err)
-			os.Exit(1)
+			emitErrorJSON("AI_REVIEW_FAILED", fmt.Sprintf("structured review failed: %v", err), 2)
+			return
 		}
 
-		output = formatReviewJSON(rawResponse, prData)
+		output = formatReviewJSON(rawResponse, prData, model, errOut, warnings)
+
+		// --fail-on: check must_fix severity and exit non-zero if threshold met.
+		if failOn != "" {
+			if exitCode := checkFailOn(output, failOn); exitCode != 0 {
+				fmt.Println(output)
+				os.Exit(exitCode)
+			}
+		}
 	} else {
 		// ---- Single-phase markdown review ----
-		fmt.Fprintln(os.Stderr, "Running AI review with full repo context...")
+		fmt.Fprintf(errOut, "Running AI review with full repo context...\n")
 		reviewText, err := runAgenticReview(loop, explorePrompt)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: review failed: %v\n", err)
-			os.Exit(1)
+			emitErrorJSON("AI_REVIEW_FAILED", fmt.Sprintf("review failed: %v", err), 2)
+			return
 		}
 		output = reviewText
 	}
 
+	// Write to file if --output is specified.
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, []byte(output), 0644); err != nil {
+			emitErrorJSON("FILE_WRITE_FAILED", fmt.Sprintf("could not write output file: %v", err), 4)
+			return
+		}
+	}
+
 	fmt.Println(output)
+}
+
+// emitErrorJSON writes a structured error as JSON to stdout and exits with the
+// given code. This ensures that even on failure, CI pipelines receive parseable
+// JSON on stdout — never an empty response.
+func emitErrorJSON(code, message string, exitCode int) {
+	result := review.ErrorOutput{
+		SchemaVersion: review.CurrentSchemaVersion,
+		ToolVersion:   Version,
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Error: review.ErrorDetail{
+			Code:    code,
+			Message: message,
+		},
+	}
+	b, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(b))
+	os.Exit(exitCode)
 }
 
 // buildStructuredJSONPrompt returns the Phase 2 prompt that asks the AI to produce
@@ -485,7 +554,8 @@ Now produce a final structured code review as JSON.
 Return ONLY valid JSON (no markdown fences, no commentary). Use this exact schema:
 
 {
-  "summary": "2-4 sentence overview of what this PR changes and why",
+  "summary": "3-5 sentence overview of what this PR changes and why",
+  "limitations": ["list of analysis limitations you encountered"],
   "must_fix": [
     {
       "file": "path/to/file.go",
@@ -493,9 +563,11 @@ Return ONLY valid JSON (no markdown fences, no commentary). Use this exact schem
       "severity": "critical|high|medium",
       "confidence": "high|medium",
       "category": "security|nil-pointer|error-handling|performance|logic|concurrency|style|other",
-      "title": "short risk title",
-      "description": "detailed explanation of the issue",
-      "suggestion": "specific, actionable fix suggestion"
+      "title": "short risk title (max 10 words)",
+      "evidence": "specific code snippet or diff excerpt that demonstrates the issue",
+      "description": "detailed explanation of the issue (max 3 sentences)",
+      "suggestion": "specific, actionable fix suggestion",
+      "uncertainty": "required if confidence is medium; explain what additional context would increase confidence"
     }
   ],
   "points_of_interest": [
@@ -506,8 +578,10 @@ Return ONLY valid JSON (no markdown fences, no commentary). Use this exact schem
       "confidence": "low",
       "category": "security|nil-pointer|error-handling|performance|logic|concurrency|style|other",
       "title": "short title",
+      "evidence": "code reference if available, or empty string",
       "description": "detailed explanation",
-      "suggestion": "actionable suggestion"
+      "suggestion": "actionable suggestion",
+      "uncertainty": "REQUIRED for all points_of_interest; explain why the finding is uncertain"
     }
   ]
 }
@@ -522,11 +596,17 @@ Classification rules:
 - confidence reflects certainty: high = clear-cut issue, medium = likely issue,
   low = speculative (low-confidence items ALWAYS go to points_of_interest).
 
+Field requirements:
+- "evidence" is REQUIRED for all must_fix entries (include the exact code or diff).
+- "uncertainty" is REQUIRED for all points_of_interest entries.
+- "uncertainty" is REQUIRED for must_fix entries with confidence="medium".
+
 Guidelines:
 - Only include real, concrete findings. Do not fabricate issues.
 - Be specific — reference exact file paths and line numbers.
 - For each finding provide an actionable suggestion.
 - If you found no issues in a category, return an empty array.
+- Maximum 15 findings total across both arrays.
 - Return ONLY the JSON object, no markdown fences or surrounding text.`
 }
 
@@ -570,40 +650,114 @@ func runAgenticReview(loop *runtime.ConversationLoop, prompt string) (string, er
 	return fullText.String(), nil
 }
 
-// formatReviewJSON parses the AI's JSON response and merges it with PR metadata.
-// If the AI response is not valid JSON, it wraps the raw text as a fallback.
-func formatReviewJSON(rawResponse string, prData *pr.PRData) string {
-	// Strip markdown fences if the AI wrapped the JSON.
+// formatReviewJSON parses the AI's JSON response and produces a typed ReviewOutput
+// with PR metadata, CI-friendly headers, and file change summaries.
+// If the AI response is not valid JSON, it falls back to wrapping the raw text.
+func formatReviewJSON(rawResponse string, prData *pr.PRData, model string, errOut io.Writer, warnings []string) string {
 	cleaned := extractJSON(rawResponse)
 
-	// Parse the AI's structured review.
-	var aiResult map[string]any
+	var aiResult struct {
+		Summary          string        `json:"summary"`
+		Limitations      []string      `json:"limitations"`
+		MustFix          []review.Risk `json:"must_fix"`
+		PointsOfInterest []review.Risk `json:"points_of_interest"`
+	}
 	if err := json.Unmarshal([]byte(cleaned), &aiResult); err != nil {
-		// Fallback: wrap raw text.
-		fmt.Fprintf(os.Stderr, "Warning: could not parse AI JSON response (%v).\n", err)
-		fmt.Fprintln(os.Stderr, "         Outputting raw response wrapped in JSON.")
-		return fallbackJSONWrap(rawResponse, prData)
+		fmt.Fprintf(errOut, "Warning: could not parse AI JSON response (%v).\n", err)
+		fmt.Fprintln(errOut, "         Outputting raw response wrapped in JSON.")
+		return fallbackJSONWrap(rawResponse, prData, model, append(warnings,
+			fmt.Sprintf("AI JSON parse failed: %v", err)))
 	}
 
-	// Merge with PR metadata.
-	result := map[string]any{
-		"pr_info": map[string]any{
-			"owner":       prData.Info.Owner,
-			"repo":        prData.Info.Repo,
-			"pull_number": prData.Info.PullNumber,
-		},
-		"title":              prData.Details.Title,
-		"author":             prData.Details.Author,
-		"summary":            aiResult["summary"],
-		"must_fix":           aiResult["must_fix"],
-		"points_of_interest": aiResult["points_of_interest"],
+	// Surface AI-reported limitations as warnings.
+	for _, lim := range aiResult.Limitations {
+		warnings = append(warnings, "AI limitation: "+lim)
+	}
+
+	result := review.ReviewOutput{
+		SchemaVersion:    review.CurrentSchemaVersion,
+		ToolVersion:      Version,
+		Model:            model,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		PRInfo:           prData.Info,
+		Title:            prData.Details.Title,
+		Author:           prData.Details.Author,
+		BaseBranch:       prData.Details.BaseBranch,
+		HeadBranch:       prData.Details.HeadBranch,
+		FileChanges:      buildFileChanges(prData),
+		Summary:          aiResult.Summary,
+		MustFix:          aiResult.MustFix,
+		PointsOfInterest: aiResult.PointsOfInterest,
+		Warnings:         warnings,
 	}
 
 	b, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return fmt.Sprintf(`{"error": %q}`, err.Error())
+		return fmt.Sprintf(`{"schema_version":%d,"error":{"code":"JSON_MARSHAL_FAILED","message":%q}}`,
+			review.CurrentSchemaVersion, err.Error())
 	}
 	return string(b)
+}
+
+// fallbackJSONWrap wraps raw text in a typed ReviewOutput when the AI did not
+// return valid JSON. This ensures the output is always parseable by jq.
+func fallbackJSONWrap(rawText string, prData *pr.PRData, model string, warnings []string) string {
+	result := review.ReviewOutput{
+		SchemaVersion:    review.CurrentSchemaVersion,
+		ToolVersion:      Version,
+		Model:            model,
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		PRInfo:           prData.Info,
+		Title:            prData.Details.Title,
+		Author:           prData.Details.Author,
+		BaseBranch:       prData.Details.BaseBranch,
+		HeadBranch:       prData.Details.HeadBranch,
+		FileChanges:      buildFileChanges(prData),
+		Summary:          "",
+		MustFix:          []review.Risk{},
+		PointsOfInterest: []review.Risk{},
+		Warnings:         append(warnings, "AI did not return valid JSON — raw review preserved in raw_review"),
+		RawReview:        rawText,
+	}
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b)
+}
+
+// buildFileChanges builds FileSummary entries from the PR's changed files list.
+func buildFileChanges(prData *pr.PRData) []review.FileSummary {
+	changes := make([]review.FileSummary, 0, len(prData.Files))
+	for _, f := range prData.Files {
+		changes = append(changes, review.FileSummary{
+			Filename:  f.Filename,
+			Category:  review.ClassifyFile(f.Filename),
+			Summary:   "",
+			Additions: f.Additions,
+			Deletions: f.Deletions,
+		})
+	}
+	return changes
+}
+
+// checkFailOn parses the JSON output and checks whether any must_fix entry meets
+// or exceeds the given severity threshold. Returns exit code 5 if the threshold
+// is met, 0 otherwise.
+func checkFailOn(output, failOn string) int {
+	threshold := review.ParseSeverity(failOn)
+	if threshold == review.RiskSeverityInfo && failOn != "info" {
+		return 0
+	}
+
+	var result review.ReviewOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return 0
+	}
+
+	for _, r := range result.MustFix {
+		if r.Severity <= threshold {
+			return 5
+		}
+	}
+	return 0
 }
 
 // extractJSON strips markdown code fences and leading/trailing whitespace from a
@@ -616,31 +770,8 @@ func extractJSON(raw string) string {
 			s = s[idx+1:]
 		}
 	}
-	// Strip closing fence.
-	if strings.HasSuffix(s, "```") {
-		s = s[:len(s)-3]
-	}
+	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
-}
-
-// fallbackJSONWrap wraps raw text in a JSON structure when the AI did not return
-// valid JSON. This ensures the output is always parseable by jq.
-func fallbackJSONWrap(rawText string, prData *pr.PRData) string {
-	result := map[string]any{
-		"pr_info": map[string]any{
-			"owner":       prData.Info.Owner,
-			"repo":        prData.Info.Repo,
-			"pull_number": prData.Info.PullNumber,
-		},
-		"title":              prData.Details.Title,
-		"author":             prData.Details.Author,
-		"summary":            "",
-		"must_fix":           []any{},
-		"points_of_interest": []any{},
-		"raw_review":         rawText,
-	}
-	b, _ := json.MarshalIndent(result, "", "  ")
-	return string(b)
 }
 
 // runTUI starts the Bubble Tea TUI for interactive use.
