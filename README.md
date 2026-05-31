@@ -59,16 +59,16 @@ go build -o ai-pr-review ./cmd/ai-pr-review
 
 ```sh
 # 交互式 TUI 模式：评审 PR 并可追问
-./ai-pr-review --pr https://github.com/owner/repo/pull/123
+./ai-pr-review --pr https://github.com/RooobinYe/ai-pr-review/pull/15
 
 # Markdown 格式输出（适合人阅读）
-./ai-pr-review --pr https://github.com/owner/repo/pull/123 --format markdown
+./ai-pr-review --pr https://github.com/RooobinYe/ai-pr-review/pull/15 --format markdown
 
 # JSON 格式输出（适合 CI/CD 消费）
-./ai-pr-review --pr https://github.com/owner/repo/pull/123 --format json
+./ai-pr-review --pr https://github.com/RooobinYe/ai-pr-review/pull/15 --format json
 
 # 用中文评审，并指定模型
-./ai-pr-review --pr https://github.com/owner/repo/pull/123 --format markdown 使用中文回答，重点关注安全问题
+./ai-pr-review --pr https://github.com/RooobinYe/ai-pr-review/pull/15 --format markdown 使用中文回答，重点关注安全问题
 ```
 
 ### 环境变量
@@ -98,7 +98,7 @@ go build -o ai-pr-review ./cmd/ai-pr-review
 #### 1. 结构化 JSON 输出
 
 ```sh
-./ai-pr-review --pr https://github.com/owner/repo/pull/123 --format json --quiet
+./ai-pr-review --pr https://github.com/RooobinYe/ai-pr-review/pull/15 --format json --quiet
 ```
 
 输出包含 `schema_version`（当前为 2）、`tool_version`、`model`、`generated_at`、PR 元信息、分类后的文件变更列表、以及分为 `must_fix` 和 `points_of_interest` 两个数组的风险发现：
