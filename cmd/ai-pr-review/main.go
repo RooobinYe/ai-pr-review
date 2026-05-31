@@ -430,8 +430,8 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 		os.Exit(1)
 	}
 
-	// Use ConversationLoop instead of review.Engine to give the AI access to
-	// tools (read_file, grep, glob, bash) so it can explore the full repo context.
+	// Use ConversationLoop to give the AI access to tools (read_file, grep,
+	// glob, bash) so it can explore the full repo context.
 	loop := runtime.NewConversationLoop(cfg, providerClient)
 
 	// Bypass permission prompts — there is no user to answer them in --format mode.
