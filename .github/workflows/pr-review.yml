@@ -20,7 +20,9 @@ jobs:
 
       - name: Run AI Review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.BASE_URL }}
+          ANTHROPIC_MODEL: ${{ vars.MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./ai-pr-review \
