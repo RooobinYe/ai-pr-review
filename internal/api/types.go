@@ -6,7 +6,7 @@ type ContentBlock struct {
 	Type string `json:"type"`
 
 	// For type == "text"
-	Text string `json:"text,omitempty"`
+	Text string `json:"text"`
 
 	// For type == "tool_use"
 	ID    string         `json:"id,omitempty"`
