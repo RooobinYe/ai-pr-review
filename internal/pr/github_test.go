@@ -43,8 +43,19 @@ func TestGetPRDetails_Success(t *testing.T) {
 			"state":    "open",
 			"html_url": "https://github.com/owner/repo/pull/123",
 			"user":     map[string]interface{}{"login": "devuser"},
-			"base":     map[string]interface{}{"ref": "main", "sha": "abc123base"},
-			"head":     map[string]interface{}{"ref": "feature-branch", "sha": "def456head"},
+			"base": map[string]interface{}{
+				"ref": "main", "sha": "abc123base",
+				"repo": map[string]interface{}{
+					"full_name": "owner/repo",
+				},
+			},
+			"head": map[string]interface{}{
+				"ref": "feature-branch", "sha": "def456head",
+				"repo": map[string]interface{}{
+					"clone_url": "https://github.com/owner/repo.git",
+					"full_name": "owner/repo",
+				},
+			},
 		})
 	})
 
@@ -76,6 +87,15 @@ func TestGetPRDetails_Success(t *testing.T) {
 	}
 	if details.HeadSHA != "def456head" {
 		t.Errorf("expected head SHA %q, got %q", "def456head", details.HeadSHA)
+	}
+	if details.CloneURL != "https://github.com/owner/repo.git" {
+		t.Errorf("expected clone URL %q, got %q", "https://github.com/owner/repo.git", details.CloneURL)
+	}
+	if details.HeadRepoName != "owner/repo" {
+		t.Errorf("expected head repo %q, got %q", "owner/repo", details.HeadRepoName)
+	}
+	if details.BaseRepoName != "owner/repo" {
+		t.Errorf("expected base repo %q, got %q", "owner/repo", details.BaseRepoName)
 	}
 }
 
@@ -293,8 +313,17 @@ func TestFetchPR_Success(t *testing.T) {
 				"state":    "open",
 				"html_url": "https://github.com/owner/repo/pull/123",
 				"user":     map[string]interface{}{"login": "author"},
-				"base":     map[string]interface{}{"ref": "main", "sha": "abc"},
-				"head":     map[string]interface{}{"ref": "feat", "sha": "def"},
+				"base": map[string]interface{}{
+					"ref": "main", "sha": "abc",
+					"repo": map[string]interface{}{"full_name": "owner/repo"},
+				},
+				"head": map[string]interface{}{
+					"ref": "feat", "sha": "def",
+					"repo": map[string]interface{}{
+						"clone_url": "https://github.com/owner/repo.git",
+						"full_name": "owner/repo",
+					},
+				},
 			})
 		}
 	})
@@ -343,8 +372,17 @@ func TestFetchPR_FilesError(t *testing.T) {
 			"state":    "open",
 			"html_url": "https://github.com/owner/repo/pull/123",
 			"user":     map[string]interface{}{"login": "author"},
-			"base":     map[string]interface{}{"ref": "main", "sha": "abc"},
-			"head":     map[string]interface{}{"ref": "feat", "sha": "def"},
+			"base": map[string]interface{}{
+				"ref": "main", "sha": "abc",
+				"repo": map[string]interface{}{"full_name": "owner/repo"},
+			},
+			"head": map[string]interface{}{
+				"ref": "feat", "sha": "def",
+				"repo": map[string]interface{}{
+					"clone_url": "https://github.com/owner/repo.git",
+					"full_name": "owner/repo",
+				},
+			},
 		})
 	})
 

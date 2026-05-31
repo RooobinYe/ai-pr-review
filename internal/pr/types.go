@@ -7,15 +7,18 @@ import (
 
 // PRDetails holds the PR metadata fetched from GitHub API.
 type PRDetails struct {
-	Title       string
-	Description string
-	Author      string
-	BaseBranch  string
-	HeadBranch  string
-	BaseSHA     string
-	HeadSHA     string
-	State       string
-	URL         string
+	Title        string
+	Description  string
+	Author       string
+	BaseBranch   string
+	HeadBranch   string
+	BaseSHA      string
+	HeadSHA      string
+	State        string
+	URL          string
+	CloneURL     string // head.repo.clone_url — used to clone the PR's source repository
+	HeadRepoName string // head.repo.full_name — "owner/repo" for the head
+	BaseRepoName string // base.repo.full_name — "owner/repo" for the base
 }
 
 // UnmarshalJSON handles the nested GitHub API response structure.
@@ -29,12 +32,19 @@ func (d *PRDetails) UnmarshalJSON(data []byte) error {
 			Login string `json:"login"`
 		} `json:"user"`
 		Base struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"base"`
 		Head struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				CloneURL string `json:"clone_url"`
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -49,6 +59,9 @@ func (d *PRDetails) UnmarshalJSON(data []byte) error {
 	d.HeadSHA = raw.Head.SHA
 	d.State = raw.State
 	d.URL = raw.HTMLURL
+	d.CloneURL = raw.Head.Repo.CloneURL
+	d.HeadRepoName = raw.Head.Repo.FullName
+	d.BaseRepoName = raw.Base.Repo.FullName
 	return nil
 }
 
