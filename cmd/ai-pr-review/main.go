@@ -1,7 +1,6 @@
 package main
 
 import (
-	"ai-pr-review/internal/api"
 	"ai-pr-review/internal/auth"
 	"ai-pr-review/internal/commands"
 	"ai-pr-review/internal/compat"
@@ -12,6 +11,7 @@ import (
 	"ai-pr-review/internal/runtime"
 	"ai-pr-review/internal/tui"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -365,10 +365,12 @@ func formatCatCounts(counts map[review.FileCategory]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// runReviewPipeline runs the full AI review and outputs formatted results.
+// runReviewPipeline runs the full AI review with repo context exploration and outputs
+// formatted results. For markdown format it runs a single agentic loop (explore +
+// review). For JSON format it uses a two-phase approach:
+//   - Phase 1: explore the repository with tools (same as markdown)
+//   - Phase 2: produce structured JSON with must_fix and points_of_interest
 func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURLFlag, extraArgs string) {
-	_ = extraArgs // extra instructions are for TUI mode only
-
 	// Resolve the effective API key: CLI flag > ldflags embedded default.
 	effectiveKey := apiKeyFlag
 	if effectiveKey == "" {
@@ -388,13 +390,10 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 	if modelFlag != "" {
 		cfg.Model = modelFlag
 	} else if cfg.Model == runtime.DefaultModel && DefaultModel != "" {
-		// Use the ldflags-injected model as a fallback over the hardcoded default.
 		cfg.Model = DefaultModel
 	}
 
 	// Base URL: CLI flag > ldflags embedded default.
-	// cfg.BaseURL was already populated from settings files + ANTHROPIC_BASE_URL
-	// env var by LoadConfig, so only override when the user explicitly asks.
 	if baseURLFlag != "" {
 		cfg.BaseURL = baseURLFlag
 	} else if cfg.BaseURL == "" && DefaultBaseURL != "" {
@@ -411,12 +410,9 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 			cfg.APIKey = token
 		}
 	} else if effectiveKey != "" {
-		// Use the API key from CLI flag or ldflags as fallback.
 		cfg.APIKey = effectiveKey
 		cfg.AuthMethod = "api_key"
 	}
-	// If ResolveCredentials failed and no effective key, cfg.APIKey still holds
-	// the value from LoadConfig (settings.json / ANTHROPIC_API_KEY env var).
 
 	if cfg.APIKey == "" && cfg.OAuthToken == "" {
 		fmt.Fprintln(os.Stderr, "Error: no credentials found.")
@@ -428,40 +424,223 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURL
 	}
 
 	// Create the provider client through the same factory used by the TUI.
-	// This ensures BaseURL from settings / ANTHROPIC_BASE_URL is respected.
 	providerClient, clientErr := runtime.NewProviderClient(cfg)
 	if clientErr != nil {
 		fmt.Fprintf(os.Stderr, "Error: could not create %s client: %v\n", cfg.ProviderName, clientErr)
 		os.Exit(1)
 	}
 
-	// The review engine needs a concrete *api.Client for SendMessage.
-	apiClient, ok := providerClient.(*api.Client)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Error: unsupported provider %q for review pipeline.\n", cfg.ProviderName)
-		fmt.Fprintln(os.Stderr, "       Direct review currently requires the Anthropic API.")
-		os.Exit(1)
-	}
+	// Use ConversationLoop instead of review.Engine to give the AI access to
+	// tools (read_file, grep, glob, bash) so it can explore the full repo context.
+	loop := runtime.NewConversationLoop(cfg, providerClient)
 
-	fmt.Fprintln(os.Stderr, "Running AI review...")
+	// Bypass permission prompts — there is no user to answer them in --format mode.
+	loop.PermManager = permissions.NewManager(permissions.ModeBypassPermissions, &permissions.Ruleset{})
 
-	engine := review.NewEngine(apiClient, cfg.Model)
-
-	ctx := context.Background()
-	result, err := engine.Run(ctx, prData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: review failed: %v\n", err)
-		os.Exit(1)
-	}
+	// Build the exploration prompt (same as TUI mode).
+	explorePrompt := buildPRPrompt(prData, extraArgs)
 
 	var output string
-	switch format {
-	case "markdown":
-		output = review.FormatMarkdown(result)
-	case "json":
-		output = review.FormatJSON(result)
+
+	if format == "json" {
+		// ---- Two-phase JSON review ----
+
+		// Phase 1: explore the repository with tools.
+		fmt.Fprintln(os.Stderr, "Phase 1/2: Exploring repository context...")
+		if _, err := runAgenticReview(loop, explorePrompt); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: exploration failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Phase 2: ask the AI to produce structured JSON based on everything it learned.
+		fmt.Fprintln(os.Stderr, "Phase 2/2: Generating structured JSON review...")
+		structuredPrompt := buildStructuredJSONPrompt()
+		rawResponse, err := runAgenticReview(loop, structuredPrompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: structured review failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		output = formatReviewJSON(rawResponse, prData)
+	} else {
+		// ---- Single-phase markdown review ----
+		fmt.Fprintln(os.Stderr, "Running AI review with full repo context...")
+		reviewText, err := runAgenticReview(loop, explorePrompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: review failed: %v\n", err)
+			os.Exit(1)
+		}
+		output = reviewText
 	}
+
 	fmt.Println(output)
+}
+
+// buildStructuredJSONPrompt returns the Phase 2 prompt that asks the AI to produce
+// a structured JSON review after it has already explored the repository.
+func buildStructuredJSONPrompt() string {
+	return `You have already explored the repository and understand the PR changes.
+Now produce a final structured code review as JSON.
+
+Return ONLY valid JSON (no markdown fences, no commentary). Use this exact schema:
+
+{
+  "summary": "2-4 sentence overview of what this PR changes and why",
+  "must_fix": [
+    {
+      "file": "path/to/file.go",
+      "line": 0,
+      "severity": "critical|high|medium",
+      "confidence": "high|medium",
+      "category": "security|nil-pointer|error-handling|performance|logic|concurrency|style|other",
+      "title": "short risk title",
+      "description": "detailed explanation of the issue",
+      "suggestion": "specific, actionable fix suggestion"
+    }
+  ],
+  "points_of_interest": [
+    {
+      "file": "path/to/file.go",
+      "line": 0,
+      "severity": "low|info",
+      "confidence": "low",
+      "category": "security|nil-pointer|error-handling|performance|logic|concurrency|style|other",
+      "title": "short title",
+      "description": "detailed explanation",
+      "suggestion": "actionable suggestion"
+    }
+  ]
+}
+
+Classification rules:
+- must_fix: HIGH or MEDIUM confidence issues that SHOULD be addressed before merging.
+  severity must be critical, high, or medium.
+- points_of_interest: LOW confidence findings, speculative issues, style nits, or
+  nice-to-have improvements that do not block merge. severity must be low or info.
+- severity reflects impact: critical = security hole or data loss, high = likely bug,
+  medium = potential issue, low = minor, info = observation.
+- confidence reflects certainty: high = clear-cut issue, medium = likely issue,
+  low = speculative (low-confidence items ALWAYS go to points_of_interest).
+
+Guidelines:
+- Only include real, concrete findings. Do not fabricate issues.
+- Be specific — reference exact file paths and line numbers.
+- For each finding provide an actionable suggestion.
+- If you found no issues in a category, return an empty array.
+- Return ONLY the JSON object, no markdown fences or surrounding text.`
+}
+
+// runAgenticReview sends the prompt through the conversation loop and collects all
+// text output. It runs the loop in a background goroutine and drains events from the
+// channel, collecting text deltas and auto-answering any permission/user prompts
+// (since --format mode is non-interactive).
+func runAgenticReview(loop *runtime.ConversationLoop, prompt string) (string, error) {
+	ctx := context.Background()
+	events := make(chan runtime.TurnEvent, 100)
+
+	var fullText strings.Builder
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- loop.SendMessageStreaming(ctx, prompt, events)
+		close(events)
+	}()
+
+	for event := range events {
+		switch event.Type {
+		case runtime.TurnEventTextDelta:
+			fullText.WriteString(event.Text)
+		case runtime.TurnEventError:
+			return "", event.Err
+		case runtime.TurnEventPermissionAsk:
+			// Auto-allow in non-interactive mode.
+			event.PermReply <- runtime.PermDecisionAllowOnce
+		case runtime.TurnEventAskUser:
+			// Auto-reply in non-interactive mode.
+			event.AskUserReply <- "N/A (non-interactive mode)"
+		}
+		// TurnEventToolStart, TurnEventToolDone, TurnEventUsage, TurnEventDone
+		// are informational — no action needed.
+	}
+
+	if err := <-errCh; err != nil {
+		return "", err
+	}
+
+	return fullText.String(), nil
+}
+
+// formatReviewJSON parses the AI's JSON response and merges it with PR metadata.
+// If the AI response is not valid JSON, it wraps the raw text as a fallback.
+func formatReviewJSON(rawResponse string, prData *pr.PRData) string {
+	// Strip markdown fences if the AI wrapped the JSON.
+	cleaned := extractJSON(rawResponse)
+
+	// Parse the AI's structured review.
+	var aiResult map[string]any
+	if err := json.Unmarshal([]byte(cleaned), &aiResult); err != nil {
+		// Fallback: wrap raw text.
+		fmt.Fprintf(os.Stderr, "Warning: could not parse AI JSON response (%v).\n", err)
+		fmt.Fprintln(os.Stderr, "         Outputting raw response wrapped in JSON.")
+		return fallbackJSONWrap(rawResponse, prData)
+	}
+
+	// Merge with PR metadata.
+	result := map[string]any{
+		"pr_info": map[string]any{
+			"owner":       prData.Info.Owner,
+			"repo":        prData.Info.Repo,
+			"pull_number": prData.Info.PullNumber,
+		},
+		"title":              prData.Details.Title,
+		"author":             prData.Details.Author,
+		"summary":            aiResult["summary"],
+		"must_fix":           aiResult["must_fix"],
+		"points_of_interest": aiResult["points_of_interest"],
+	}
+
+	b, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+	return string(b)
+}
+
+// extractJSON strips markdown code fences and leading/trailing whitespace from a
+// string that is expected to contain JSON.
+func extractJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+	// Strip opening fence: ```json or just ```
+	if strings.HasPrefix(s, "```") {
+		if idx := strings.Index(s, "\n"); idx >= 0 {
+			s = s[idx+1:]
+		}
+	}
+	// Strip closing fence.
+	if strings.HasSuffix(s, "```") {
+		s = s[:len(s)-3]
+	}
+	return strings.TrimSpace(s)
+}
+
+// fallbackJSONWrap wraps raw text in a JSON structure when the AI did not return
+// valid JSON. This ensures the output is always parseable by jq.
+func fallbackJSONWrap(rawText string, prData *pr.PRData) string {
+	result := map[string]any{
+		"pr_info": map[string]any{
+			"owner":       prData.Info.Owner,
+			"repo":        prData.Info.Repo,
+			"pull_number": prData.Info.PullNumber,
+		},
+		"title":              prData.Details.Title,
+		"author":             prData.Details.Author,
+		"summary":            "",
+		"must_fix":           []any{},
+		"points_of_interest": []any{},
+		"raw_review":         rawText,
+	}
+	b, _ := json.MarshalIndent(result, "", "  ")
+	return string(b)
 }
 
 // runTUI starts the Bubble Tea TUI for interactive use.
