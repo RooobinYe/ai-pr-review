@@ -23,6 +23,14 @@ jobs:
             goos: darwin
             goarch: amd64
             artifact: ai-pr-review-darwin-amd64
+          - os: ubuntu-latest
+            goos: darwin
+            goarch: arm64
+            artifact: ai-pr-review-darwin-arm64
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            artifact: ai-pr-review-windows-amd64.exe
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
