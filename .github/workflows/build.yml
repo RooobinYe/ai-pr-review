@@ -1,0 +1,65 @@
+name: Build Zero-Config Binary
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to build'
+        required: false
+        default: 'master'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact: ai-pr-review-linux-amd64
+          - os: ubuntu-latest
+            goos: darwin
+            goarch: amd64
+            artifact: ai-pr-review-darwin-amd64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -ldflags "\
+              -X 'main.DefaultAPIKey=${{ secrets.API_KEY }}' \
+              -X 'main.DefaultBaseURL=${{ vars.BASE_URL }}' \
+              -X 'main.DefaultModel=${{ vars.MODEL }}'" \
+            -o "${{ matrix.artifact }}" \
+            ./cmd/ai-pr-review
+
+      - name: Verify binary
+        run: |
+          file "${{ matrix.artifact }}"
+          # Confirm ldflags were injected by checking the binary symbols.
+          go tool nm "${{ matrix.artifact }}" | grep -q 'DefaultAPIKey' && echo "DefaultAPIKey: injected" || echo "DefaultAPIKey: NOT FOUND"
+          go tool nm "${{ matrix.artifact }}" | grep -q 'DefaultBaseURL' && echo "DefaultBaseURL: injected" || echo "DefaultBaseURL: NOT FOUND"
+          go tool nm "${{ matrix.artifact }}" | grep -q 'DefaultModel' && echo "DefaultModel: injected" || echo "DefaultModel: NOT FOUND"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
