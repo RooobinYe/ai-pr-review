@@ -152,7 +152,13 @@ func writeRiskList(b *strings.Builder, risks []Risk) {
 			b.WriteString(fmt.Sprintf(":%d", risk.Line))
 		}
 		b.WriteString("\n\n")
+		if risk.Evidence != "" {
+			b.WriteString(fmt.Sprintf("**Evidence**:\n```\n%s\n```\n\n", risk.Evidence))
+		}
 		b.WriteString(fmt.Sprintf("**Description**: %s\n\n", risk.Description))
 		b.WriteString(fmt.Sprintf("**Suggestion**: %s\n\n", risk.Suggestion))
+		if risk.Uncertainty != "" {
+			b.WriteString(fmt.Sprintf("*Uncertainty*: %s\n\n", risk.Uncertainty))
+		}
 	}
 }

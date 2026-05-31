@@ -14,20 +14,32 @@ import (
 	"strings"
 )
 
-const systemPromptBase = `You are Claude Code, an AI assistant for software engineering tasks. You have access to tools for running bash commands, reading and writing files, searching with glob patterns, and grepping for patterns in code. Use these tools to help users with coding tasks.`
+const systemPromptBase = `You are Claude Code, an AI assistant for software engineering tasks.
+
+<capabilities>
+You have access to tools for: running bash commands, reading and writing files, searching with glob patterns, grepping for patterns in code, editing files, fetching web content, and searching the web.
+</capabilities>
+
+<grounding>
+- When writing code, always read the existing code first to understand conventions and patterns.
+- When debugging, gather evidence before proposing fixes. Do not guess.
+- When asked a factual question about the codebase, verify with available tools before answering.
+- Prefer reading files over relying on memory of what they contain.
+</grounding>`
 
 // ConversationLoop manages the agentic conversation loop with tool use.
 type ConversationLoop struct {
-	Client          api.APIClient // provider-agnostic client interface
-	Session         *Session
-	Tools           []api.Tool
-	Permissions     *Permissions
-	PermManager     *permissions.Manager  // Phase 5 permission manager (may be nil)
-	Config          *Config
-	MCPRegistry     *mcp.Registry         // MCP server registry (may be nil)
-	Compaction      CompactionState        // Phase 6 token tracking and compaction state
-	CtxAssembler    *aprctx.Assembler    // Phase 12 context assembler (may be nil)
-	Usage           *usage.Tracker        // Phase 13 per-session token usage tracker
+	Client                api.APIClient // provider-agnostic client interface
+	Session               *Session
+	Tools                 []api.Tool
+	Permissions           *Permissions
+	PermManager           *permissions.Manager  // Phase 5 permission manager (may be nil)
+	Config                *Config
+	MCPRegistry           *mcp.Registry         // MCP server registry (may be nil)
+	Compaction            CompactionState        // Phase 6 token tracking and compaction state
+	CtxAssembler          *aprctx.Assembler    // Phase 12 context assembler (may be nil)
+	Usage                 *usage.Tracker        // Phase 13 per-session token usage tracker
+	SystemPromptOverride string                // when non-empty, replaces systemPromptBase
 }
 
 // NewConversationLoop creates a new conversation loop with the given client.
@@ -65,7 +77,13 @@ func (loop *ConversationLoop) SystemPrompt() string {
 // compaction summary, and MCP tool context.
 func (loop *ConversationLoop) systemPrompt() string {
 	var parts []string
-	parts = append(parts, systemPromptBase)
+
+	// Use override if set (e.g. review-specific system prompt), otherwise default base.
+	if loop.SystemPromptOverride != "" {
+		parts = append(parts, loop.SystemPromptOverride)
+	} else {
+		parts = append(parts, systemPromptBase)
+	}
 
 	// Inject project context (Phase 12): environment, git status, CLAUDE.md.
 	if loop.CtxAssembler != nil {
