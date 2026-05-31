@@ -21,6 +21,23 @@ import (
 	qtui "ai-pr-review/internal/q/tui"
 )
 
+// These package-level variables can be injected at build time via ldflags to
+// produce a zero-config binary:
+//
+//	go build -ldflags "\
+//	  -X 'main.DefaultAPIKey=sk-xxx' \
+//	  -X 'main.DefaultBaseURL=https://api.example.com' \
+//	  -X 'main.DefaultModel=claude-sonnet-4-20250514'" \
+//	  ./cmd/ai-pr-review
+//
+// Each serves as the lowest-priority fallback so that env vars, CLI flags, and
+// stored credentials all take precedence over the embedded value.
+var (
+	DefaultAPIKey  string
+	DefaultBaseURL string
+	DefaultModel   string
+)
+
 func main() {
 	// Route diagnostic subcommands before flag parsing.
 	if len(os.Args) > 1 {
@@ -44,6 +61,8 @@ func main() {
 	prFlag := flag.String("pr", "", "GitHub PR URL to review (e.g. https://github.com/owner/repo/pull/123)")
 	formatFlag := flag.String("format", "", "Output format: markdown or json (requires --pr)")
 	modelFlag := flag.String("model", "", "Override the model to use")
+	apiKeyFlag := flag.String("api-key", "", "API key for the AI provider (overrides embedded default)")
+	baseURLFlag := flag.String("base-url", "", "Base URL for the AI provider API (overrides embedded default)")
 	replFlag := flag.Bool("repl", false, "Run in interactive REPL mode (default when no --prompt)")
 	sessionFlag := flag.String("session", "", "Session ID to load")
 	sessionDirFlag := flag.String("session-dir", "", "Directory to store sessions")
@@ -72,6 +91,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  CLAUDE_CODE_USE_BEDROCK  Set to 1 to use AWS Bedrock (env-var fallback)\n")
 		fmt.Fprintf(os.Stderr, "  CLAUDE_CODE_USE_VERTEX   Set to 1 to use Google Vertex AI (env-var fallback)\n")
 		fmt.Fprintf(os.Stderr, "  CLAUDE_CODE_USE_FOUNDRY  Set to 1 to use Azure AI Foundry (env-var fallback)\n")
+		fmt.Fprintf(os.Stderr, "\nCredential precedence (highest to lowest):\n")
+		fmt.Fprintf(os.Stderr, "  1. Environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY)\n")
+		fmt.Fprintf(os.Stderr, "  2. --api-key CLI flag\n")
+		fmt.Fprintf(os.Stderr, "  3. Embedded at build time (ldflags -X main.DefaultAPIKey=...)\n")
+		fmt.Fprintf(os.Stderr, "  4. Stored credentials (~/.ai-pr-review/credentials.json from /login)\n")
+		fmt.Fprintf(os.Stderr, "  5. Settings file (.ai-pr-review/settings.json / settings.local.json)\n")
 	}
 
 	flag.Parse()
@@ -123,7 +148,7 @@ func main() {
 		fmt.Printf("  URL:     %s\n", prData.Details.URL)
 		// --format: run review pipeline and exit immediately.
 		if *formatFlag != "" {
-			runReviewPipeline(prData, *formatFlag, *modelFlag, extraArgs)
+			runReviewPipeline(prData, *formatFlag, *modelFlag, *apiKeyFlag, *baseURLFlag, extraArgs)
 			return
 		}
 
@@ -136,9 +161,27 @@ func main() {
 
 	if *modelFlag != "" {
 		cfg.Model = *modelFlag
+	} else if cfg.Model == runtime.DefaultModel && DefaultModel != "" {
+		// Use the ldflags-injected model as a fallback over the hardcoded default.
+		cfg.Model = DefaultModel
 	}
 	if *sessionDirFlag != "" {
 		cfg.SessionDir = *sessionDirFlag
+	}
+
+	// Resolve the effective API key: CLI flag > ldflags embedded default.
+	effectiveKey := *apiKeyFlag
+	if effectiveKey == "" {
+		effectiveKey = DefaultAPIKey
+	}
+
+	// Resolve the effective base URL: CLI flag > ldflags embedded default.
+	// cfg.BaseURL was already populated from settings files + ANTHROPIC_BASE_URL
+	// env var by LoadConfig, so only override when the user explicitly asks.
+	if *baseURLFlag != "" {
+		cfg.BaseURL = *baseURLFlag
+	} else if cfg.BaseURL == "" && DefaultBaseURL != "" {
+		cfg.BaseURL = DefaultBaseURL
 	}
 
 	// Resolve credentials using the multi-provider credential store.
@@ -153,6 +196,11 @@ func main() {
 		} else {
 			cfg.APIKey = token
 		}
+	} else if effectiveKey != "" {
+		// Use the API key from CLI flag or ldflags as fallback.
+		cfg.APIKey = effectiveKey
+		cfg.AuthMethod = "api_key"
+		credErr = nil
 	} else {
 		// No credentials found — start with NoAuthClient so the TUI still opens.
 		// The user can run /login inside the TUI.
@@ -210,9 +258,11 @@ func main() {
 
 	// Single prompt (non-interactive) mode — no TUI, plain stdout streaming.
 	if *promptFlag != "" {
-		if credErr != nil {
+		if credErr != nil && cfg.APIKey == "" && cfg.OAuthToken == "" {
 			fmt.Fprintln(os.Stderr, "Error: cannot use --prompt without valid credentials.")
-			fmt.Fprintln(os.Stderr, "Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or run the TUI and use /login.")
+			fmt.Fprintln(os.Stderr, "  Pass --api-key <key>")
+			fmt.Fprintln(os.Stderr, "  Set ANTHROPIC_API_KEY or OPENAI_API_KEY")
+			fmt.Fprintln(os.Stderr, "  Or run the TUI and use /login to authenticate.")
 			os.Exit(1)
 		}
 		sigCh := make(chan os.Signal, 1)
@@ -387,8 +437,15 @@ func formatCatCounts(counts map[review.FileCategory]int) string {
 }
 
 // runReviewPipeline runs the full AI review and outputs formatted results.
-func runReviewPipeline(prData *pr.PRData, format, modelFlag, extraArgs string) {
+func runReviewPipeline(prData *pr.PRData, format, modelFlag, apiKeyFlag, baseURLFlag, extraArgs string) {
 	_ = extraArgs // extra instructions are for TUI mode only
+
+	// Resolve the effective API key: CLI flag > ldflags embedded default.
+	effectiveKey := apiKeyFlag
+	if effectiveKey == "" {
+		effectiveKey = DefaultAPIKey
+	}
+
 	format = strings.ToLower(format)
 	if format != "markdown" && format != "json" {
 		fmt.Fprintf(os.Stderr, "Error: unsupported format %q. Use \"markdown\" or \"json\".\n", format)
@@ -401,6 +458,18 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, extraArgs string) {
 
 	if modelFlag != "" {
 		cfg.Model = modelFlag
+	} else if cfg.Model == runtime.DefaultModel && DefaultModel != "" {
+		// Use the ldflags-injected model as a fallback over the hardcoded default.
+		cfg.Model = DefaultModel
+	}
+
+	// Base URL: CLI flag > ldflags embedded default.
+	// cfg.BaseURL was already populated from settings files + ANTHROPIC_BASE_URL
+	// env var by LoadConfig, so only override when the user explicitly asks.
+	if baseURLFlag != "" {
+		cfg.BaseURL = baseURLFlag
+	} else if cfg.BaseURL == "" && DefaultBaseURL != "" {
+		cfg.BaseURL = DefaultBaseURL
 	}
 
 	providerName, token, authMethod, credErr := auth.ResolveCredentials()
@@ -412,15 +481,20 @@ func runReviewPipeline(prData *pr.PRData, format, modelFlag, extraArgs string) {
 		} else {
 			cfg.APIKey = token
 		}
+	} else if effectiveKey != "" {
+		// Use the API key from CLI flag or ldflags as fallback.
+		cfg.APIKey = effectiveKey
+		cfg.AuthMethod = "api_key"
 	}
-	// If ResolveCredentials failed, cfg.APIKey still holds the value from
-	// LoadConfig (settings.json / ANTHROPIC_API_KEY env var).
+	// If ResolveCredentials failed and no effective key, cfg.APIKey still holds
+	// the value from LoadConfig (settings.json / ANTHROPIC_API_KEY env var).
 
 	if cfg.APIKey == "" && cfg.OAuthToken == "" {
 		fmt.Fprintln(os.Stderr, "Error: no credentials found.")
-		fmt.Fprintln(os.Stderr, "       Set ANTHROPIC_API_KEY or OPENAI_API_KEY,")
-		fmt.Fprintln(os.Stderr, "       add \"apiKey\" to .ai-pr-review/settings.json,")
-		fmt.Fprintln(os.Stderr, "       or run the TUI first and use /login to authenticate.")
+		fmt.Fprintln(os.Stderr, "  Pass --api-key <key>")
+		fmt.Fprintln(os.Stderr, "  Set ANTHROPIC_API_KEY or OPENAI_API_KEY")
+		fmt.Fprintln(os.Stderr, "  Add \"apiKey\" to .ai-pr-review/settings.json")
+		fmt.Fprintln(os.Stderr, "  Or run the TUI and use /login to authenticate.")
 		os.Exit(1)
 	}
 
