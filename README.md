@@ -55,6 +55,10 @@ cd ai-pr-review
 go build -o ai-pr-review ./cmd/ai-pr-review
 ```
 
+### 评委直接下载
+
+评委可直接在 Github Release 页面下载预编译二进制，开箱即用，无需配置 API Key。
+
 ### 基本使用
 
 ```sh
