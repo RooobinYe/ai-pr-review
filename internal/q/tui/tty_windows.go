@@ -2,7 +2,7 @@
 
 package tui
 
-import "syscall"
+import "golang.org/x/sys/windows"
 
 func isTTY(r any) bool {
 	fd, ok := extractFD(r)
@@ -14,6 +14,6 @@ func isTTY(r any) bool {
 	}
 
 	var mode uint32
-	err := syscall.GetConsoleMode(syscall.Handle(fd), &mode)
+	err := windows.GetConsoleMode(windows.Handle(fd), &mode)
 	return err == nil
 }
